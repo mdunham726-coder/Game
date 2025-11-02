@@ -2,9 +2,21 @@ const express = require('express');
 const WorldGen = require('./WorldGen.v4.patched (1)');
 const Engine = require('./Engine.v6.patched (1)');
 const axios = require('axios');
-const path = require('path');
 const app = express();
 app.use(express.json());
+
+let gameState = null;
+
+function initializeGame() {
+  const world = WorldGen.generateWorld();
+  gameState = Engine.initState();
+  gameState.world = world;
+  return gameState;
+}
+
+// Initialize on startup
+gameState = initializeGame();
+
 app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
 <html>
@@ -28,44 +40,51 @@ app.get('/', (req, res) => {
       const resp = await fetch('/narrate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, state: {} })
+        body: JSON.stringify({ action })
       });
       const data = await resp.json();
       document.getElementById('output').innerHTML += '<p>' + data.narrative + '</p>';
+      document.getElementById('action').value = '';
     }
   </script>
 </body>
 </html>`);
 });
-let state = Engine.initState();
+
 app.get('/status', (req, res) => {
-  res.json({ message: 'Roguelike engine running!', layer: state.world.current_layer });
+  res.json({ message: 'Roguelike engine running!', state: gameState });
 });
 
-app.post('/turn', (req, res) => {
-  const action = req.body.action || 'wait';
-  const output = Engine.buildOutput(state, action);
-  res.json(output);
-});
 app.post('/narrate', async (req, res) => {
-  const { action, state } = req.body;
+  const { action } = req.body;
+  
+  if (!gameState) {
+    gameState = initializeGame();
+  }
   
   if (!process.env.DEEPSEEK_API_KEY) {
     return res.status(500).json({ error: 'DEEPSEEK_API_KEY not set' });
   }
   
   try {
+    // Apply action to game state
+    gameState = Engine.buildOutput(gameState, action);
+    
+    // Send DeepSeek the REAL world state + action
     const response = await axios.post('https://api.deepseek.com/v1/chat/completions', {
       model: 'deepseek-chat',
       messages: [{
         role: 'user',
-        content: `You are a dungeon master narrating a fantasy adventure. Here is the current game state:
+        content: `You are a dungeon master narrating a fantasy adventure. Current game state:
 
-${JSON.stringify(state, null, 2)}
+World: ${JSON.stringify(gameState.world, null, 2)}
+Player Location: ${gameState.player?.location || 'unknown'}
+Nearby NPCs: ${JSON.stringify(gameState.world?.npcs?.filter(n => n.location === gameState.player?.location) || [], null, 2)}
+Player Inventory: ${JSON.stringify(gameState.player?.inventory || [], null, 2)}
 
-The player action is: "${action}"
+Player action: "${action}"
 
-Describe what happens next in 2-3 sentences, keeping it immersive and vivid.`
+Narrate what happens next in 2-3 sentences, considering the actual world state.`
       }],
       max_tokens: 300,
       temperature: 0.8
@@ -73,11 +92,15 @@ Describe what happens next in 2-3 sentences, keeping it immersive and vivid.`
       headers: { 'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}` }
     });
     
-    res.json({ narrative: response.data.choices[0].message.content });
+    res.json({ 
+      narrative: response.data.choices[0].message.content,
+      state: gameState 
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
