@@ -75,7 +75,6 @@ function parseIntent(text) {
   // movement parsing moved to WorldGen.parseAndApplyMovement
 }
   return { action:'noop' };
-}
 
 // Expiry tick + regen + player actions (take/drop/look)
 // (movement handled by WorldGen; we still parse it so Engine can route)
