@@ -625,4 +625,4 @@ function generateL3Building(building_id, building_data) {
   };
 }
 
-module.exports = { worldGenStep, exposeSitesInWindow, hydrateCell, generateL1FeatureDescription, generateL2Settlement, generateL2POI, generateL3Building, hashSeedFromLocationID, makeLCG };
+module.exports = { worldGenStep, exposeSitesInWindow, generateL1FeatureDescription, generateL2Settlement, generateL2POI, generateL3Building, hashSeedFromLocationID, makeLCG };
