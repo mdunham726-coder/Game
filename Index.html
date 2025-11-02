@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ultimate Dungeon Master</title>
+  <style>
+    body { font-family: Georgia, serif; background: #1a1a1a; color: #e0e0e0; max-width: 800px; margin: 0 auto; padding: 20px; }
+    h1 { color: #d4af37; text-align: center; }
+    #narrative { background: #0d0d0d; border: 2px solid #d4af37; padding: 20px; min-height: 200px; margin: 20px 0; line-height: 1.6; }
+    input { width: 80%; padding: 10px; font-size: 16px; background: #333; color: #e0e0e0; border: 1px solid #666; }
+    button { width: 15%; padding: 10px; font-size: 16px; background: #d4af37; color: #1a1a1a; border: none; cursor: pointer; }
+    #loading { display: none; color: #d4af37; }
+  </style>
+</head>
+<body>
+  <h1>Ultimate Dungeon Master</h1>
+  <div id="narrative"><p>You stand at the edge of a vast dungeon...</p></div>
+  <div>
+    <input type="text" id="actionInput" placeholder="What do you do?" autofocus>
+    <button onclick="submitAction()">Submit</button>
+  </div>
+  <div id="loading">Loading narrative...</div>
+
+  <script>
+    async function submitAction() {
+      const action = document.getElementById('actionInput').value;
+      if (!action) return;
+      
+      document.getElementById('loading').style.display = 'block';
+      
+      try {
+        const response = await fetch('/narrate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            action: action,
+            state: { player: { action: action }, timestamp: new Date() }
+          })
+        });
+        
+        const data = await response.json();
+        document.getElementById('narrative').innerHTML = `<p>${data.narrative}</p>`;
+        document.getElementById('actionInput').value = '';
+      } catch (err) {
+        document.getElementById('narrative').innerHTML = `<p>Error: ${err.message}</p>`;
+      } finally {
+        document.getElementById('loading').style.display = 'none';
+      }
+    }
+    
+    document.getElementById('actionInput').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') submitAction();
+    });
+  </script>
+</body>
+</html>
