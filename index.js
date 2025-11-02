@@ -4,7 +4,7 @@ const Engine = require('./Engine.v6.patched (1)');
 const axios = require('axios');
 const app = express();
 app.use(express.json());
-
+app.use(express.static('.')); // Serve files from root directory
 let state = Engine.initState();
 
 app.get('/status', (req, res) => {
