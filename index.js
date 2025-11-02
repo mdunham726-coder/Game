@@ -5,9 +5,8 @@ const axios = require('axios');
 const path = require('path');
 const app = express();
 app.use(express.json());
-app.use(express.static('.')); // Serve files from root directory
+app.use(express.static('.', { index: 'index.html' }));
 let state = Engine.initState();
-
 app.get('/status', (req, res) => {
   res.json({ message: 'Roguelike engine running!', layer: state.world.current_layer });
 });
@@ -47,9 +46,6 @@ Describe what happens next in 2-3 sentences, keeping it immersive and vivid.`
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, './index.html'));
 });
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
