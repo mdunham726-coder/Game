@@ -2,6 +2,7 @@ const express = require('express');
 const WorldGen = require('./WorldGen.v4.patched (1)');
 const Engine = require('./Engine.v6.patched (1)');
 const axios = require('axios');
+const path = require('path');
 const app = express();
 app.use(express.json());
 app.use(express.static('.')); // Serve files from root directory
@@ -48,7 +49,7 @@ Describe what happens next in 2-3 sentences, keeping it immersive and vivid.`
   }
 });
 app.get('/', (req, res) => {
-  res.sendFile(__dirname + '/index.html');
+  res.sendFile(path.join(__dirname, './index.html'));
 });
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
