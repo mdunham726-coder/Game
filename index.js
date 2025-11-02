@@ -1,6 +1,6 @@
 const express = require('express');
-const WorldGen = require('./WorldGen.v4.patched (1).js');
-const Engine = require('./Engine.v6.patched (1).js');
+const WorldGen = require('./WorldGen.v4.patched (1)');
+const Engine = require('./Engine.v6.patched (1).');
 
 const app = express();
 app.use(express.json());
