@@ -47,6 +47,9 @@ Describe what happens next in 2-3 sentences, keeping it immersive and vivid.`
     res.status(500).json({ error: err.message });
   }
 });
+app.get('/', (req, res) => {
+  res.sendFile(__dirname + '/index.html');
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
