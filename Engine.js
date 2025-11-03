@@ -117,7 +117,7 @@ function buildOutput(prevState, inputObj) {
   changes1.push({ op:"set", path:"/world/time_utc", value: nowUTC });
 
   // Phase C pre: expiry tick
-  Actions.tickMerchantsAndFactions(state, nowUTC, changes1, phaseFlags);
+  // Actions.tickMerchantsAndFactions(state, nowUTC, changes1, phaseFlags);
 
   // Parse & apply player actions (non-movement)
   const actions = Actions.parseIntent(inputObj ? inputObj["player_intent"] : "") || { action:'noop' };
