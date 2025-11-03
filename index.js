@@ -77,7 +77,11 @@ try {
   if (!Engine.buildOutput) {
     throw new Error('Engine.buildOutput is not a function');
   }
-  engineOutput = Engine.buildOutput(gameState, action);
+  engineOutput = Engine.buildOutput(gameState, {
+  timestamp_utc: new Date().toISOString(),
+  player_intent: action,
+  turn_id: `turn_${Date.now()}`
+});
   if (engineOutput && engineOutput.state) {
     gameState = engineOutput.state;
   }
