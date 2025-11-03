@@ -32,7 +32,7 @@ function initializeGame() {
 }
 
 app.get('/', (req, res) => {
-  const htmlPath = path.join(__dirname, 'Index.html');
+  const htmlPath = path.join(__dirname, 'index.html');
   res.sendFile(htmlPath);
 });
 
@@ -64,7 +64,7 @@ app.post('/narrate', async (req, res) => {
   if (isFirstTurn === true) {
     isFirstTurn = false;
     return res.json({
-      narrative: "Describe your world in 3 sentences.",
+      narrative: action,
       state: gameState,
       engine_output: null
     });
