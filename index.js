@@ -226,7 +226,7 @@ CONSTRAINTS:
 - Narrate ONLY what the player can see based on current location and adjacent areas
 - Do NOT invent dungeons, doors, or architecture not mentioned above
 - Do NOT reference locations you weren't provided
-- Write two full paragraphs of immersive description
+- Write a full paragraph of immersive description
 
 DEBUG_FOOTER:
 At the end of your narration, append this metadata block:
