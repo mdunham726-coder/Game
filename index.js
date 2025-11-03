@@ -12,10 +12,8 @@ app.use(express.json());
 let gameState = null;
 let isFirstTurn = true;
 
-// Initialize a new game world
 function initializeGame() {
   let state = null;
-  
   if (Engine && typeof Engine.initState === 'function') {
     state = Engine.initState();
   } else {
@@ -24,10 +22,8 @@ function initializeGame() {
       world: { npcs: [], cells: {}, l2_active: null, l3_active: null, current_layer: 1 }
     };
   }
-  
   gameState = state;
   isFirstTurn = true;
-  
   return {
     status: "world_created",
     state: gameState,
@@ -35,36 +31,27 @@ function initializeGame() {
   };
 }
 
-// GET / - Serve the HTML
 app.get('/', (req, res) => {
   const htmlPath = path.join(__dirname, 'Index.html');
   res.sendFile(htmlPath);
 });
 
-// GET /init - Initialize a new game
 app.get('/init', (req, res) => {
   const result = initializeGame();
   return res.json(result);
 });
 
-// POST /narrate - Process player action
 app.post('/narrate', async (req, res) => {
   const { action } = req.body;
-  
   if (!action) {
     return res.status(400).json({ error: 'action is required' });
   }
-  
-  // Guard: Initialize if null
   if (gameState === null) {
     const init = initializeGame();
     gameState = init.state;
   }
-  
-  // Check for restart keywords
   const restartKeywords = ["new world", "restart", "begin again"];
   const actionLower = action.toLowerCase();
-  
   if (restartKeywords.some(kw => actionLower.includes(kw))) {
     const init = initializeGame();
     gameState = init.state;
@@ -74,8 +61,6 @@ app.post('/narrate', async (req, res) => {
       restart: true
     });
   }
-  
-  // First-turn override: always prompt for world description on first action
   if (isFirstTurn === true) {
     isFirstTurn = false;
     return res.json({
@@ -84,13 +69,9 @@ app.post('/narrate', async (req, res) => {
       engine_output: null
     });
   }
-  
-  // Call Engine to process action
   let engineOutput = null;
   try {
     engineOutput = Engine.buildOutput(gameState, action);
-    
-    // If buildOutput returns a new state, reassign; otherwise assume mutation in place
     if (engineOutput && engineOutput.state) {
       gameState = engineOutput.state;
     }
@@ -102,19 +83,13 @@ app.post('/narrate', async (req, res) => {
       state: gameState 
     });
   }
-  
-  // Extract scene data from gameState
-  const scene = {
+    const scene = {
     playerLocation: gameState.player?.mx || 'unknown',
     playerLayer: gameState.player?.layer || 0,
     playerInventory: gameState.player?.inventory || [],
-    npcs: (gameState.world?.npcs || []).filter(n => 
-      n.location === gameState.player?.mx
-    ),
+    npcs: (gameState.world?.npcs || []).filter(n => n.location === gameState.player?.mx),
     engineDeltas: engineOutput?.deltas || []
   };
-  
-  // Call DeepSeek for narration
   if (!process.env.DEEPSEEK_API_KEY) {
     return res.json({ 
       error: 'DEEPSEEK_API_KEY not set',
@@ -123,7 +98,6 @@ app.post('/narrate', async (req, res) => {
       engine_output: engineOutput
     });
   }
-  
   try {
     const response = await axios.post('https://api.deepseek.com/v1/chat/completions', {
       model: 'deepseek-chat',
@@ -146,13 +120,8 @@ Narrate what happens next in 2-3 sentences, grounded in the actual game state.`
     }, {
       headers: { 'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}` }
     });
-    
     const narrative = response.data.choices[0].message.content;
-    return res.json({ 
-      narrative, 
-      state: gameState, 
-      engine_output: engineOutput 
-    });
+    return res.json({ narrative, state: gameState, engine_output: engineOutput });
   } catch (err) {
     console.error('DeepSeek error:', err.message);
     return res.json({ 
@@ -164,7 +133,6 @@ Narrate what happens next in 2-3 sentences, grounded in the actual game state.`
   }
 });
 
-// POST /reset - Reset the game
 app.post('/reset', (req, res) => {
   gameState = null;
   isFirstTurn = true;
@@ -172,7 +140,6 @@ app.post('/reset', (req, res) => {
   return res.json(result);
 });
 
-// GET /status - Debug endpoint
 app.get('/status', (req, res) => {
   return res.json({
     status: 'running',
@@ -182,7 +149,6 @@ app.get('/status', (req, res) => {
   });
 });
 
-// Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
