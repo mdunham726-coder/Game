@@ -178,7 +178,43 @@ Narrate what happens next in 2-3 sentences, grounded in the actual game state.`
     });
   }
 });
+app.post('/debug', async (req, res) => {
+  const { action } = req.body;
+  
+  if (!gameState) {
+    return res.json({ error: 'No game state exists' });
+  }
 
+  // Parse and process the action through engine
+  const parsed = Actions.parseIntent(action);
+  const inferredKind = (parsed && parsed.action === "move") ? "MOVE" : "FREEFORM";
+  const inputObj = mapActionToInput(action, inferredKind);
+  if (parsed && parsed.action === "move" && parsed.dir) {
+    inputObj.player_intent.dir = parsed.dir;
+  }
+
+  let engineOutput = null;
+  try {
+    engineOutput = Engine.buildOutput(gameState, inputObj);
+    if (engineOutput && engineOutput.state) {
+      gameState = engineOutput.state;
+    }
+  } catch (err) {
+    return res.json({ error: err.message });
+  }
+
+  // Return RAW technical data - no DeepSeek narrative
+  return res.json({
+    raw_state: gameState,
+    engine_output: engineOutput,
+    parsed_action: parsed,
+    current_position: gameState.world?.position,
+    current_cell: gameState.world?.cells?.[`L1:${gameState.world?.position?.mx},${gameState.world?.position?.my}:${gameState.world?.position?.lx},${gameState.world?.position?.ly}`],
+    all_cells: Object.keys(gameState.world?.cells || {}),
+    npcs: gameState.world?.npcs || [],
+    inventory: gameState.player?.inventory || []
+  });
+});
 app.get('/status', (req, res) => {
   return res.json({
     status: 'running',
