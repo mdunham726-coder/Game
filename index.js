@@ -83,7 +83,7 @@ app.post('/narrate', async (req, res) => {
       state: gameState 
     });
   }
-    const scene = {
+  const scene = {
     playerLocation: gameState.player?.mx || 'unknown',
     playerLayer: gameState.player?.layer || 0,
     playerInventory: gameState.player?.inventory || [],
@@ -150,5 +150,6 @@ app.get('/status', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}
+`);
 });
