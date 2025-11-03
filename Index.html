@@ -33,10 +33,7 @@
         const response = await fetch('/narrate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            action: action,
-            state: { player: { action: action }, timestamp: new Date() }
-          })
+          body: JSON.stringify({ action: action })
         });
         
         const data = await response.json();
