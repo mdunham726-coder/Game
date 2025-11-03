@@ -32,7 +32,7 @@ function initializeGame() {
 }
 
 app.get('/', (req, res) => {
-  const htmlPath = path.join(__dirname, 'index.html');
+  const htmlPath = path.join(__dirname, 'Index.html');
   res.sendFile(htmlPath);
 });
 
