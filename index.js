@@ -200,7 +200,10 @@ app.post('/narrate', async (req, res) => {
       model: 'deepseek-chat',
       messages: [{
         role: 'user',
-        content: `You are a dungeon master narrating a roguelike adventure.
+        content: `- Translate engine output (terrain types, cell descriptions, entity lists) into vivid, coherent prose
+- Maintain environmental consistency: terrain types define what the player can see and interact with
+- Build narrative tension through descriptions of current terrain and environmental features
+- React to player action by describing immediate sensory consequences within the game world
 
 CURRENT LOCATION:
 ${scene.currentCell.description}
@@ -221,6 +224,7 @@ CONSTRAINTS:
 - Narrate ONLY what the player can see based on current location and adjacent areas
 - Do NOT invent dungeons, doors, or architecture not mentioned above
 - Do NOT reference locations you weren't provided
+- If the player input is in parentheses (OOC), break character immediately. Answer technical questions about game state, engine behavior, or narration logic directly and clearly. Do not roleplay.
 - Write two full paragraphs of immersive description.`
       }],
       temperature: 0.7
