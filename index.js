@@ -16,6 +16,7 @@ function initializeGame() {
   let state = null;
   if (Engine && typeof Engine.initState === 'function') {
     state = Engine.initState();
+  }
   gameState = state;
   isFirstTurn = true;
   return {
