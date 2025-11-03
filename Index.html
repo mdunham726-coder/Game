@@ -40,8 +40,9 @@
         });
         
         const data = await response.json();
-        document.getElementById('narrative').innerHTML = `<p>${data.narrative}</p>`;
-        document.getElementById('actionInput').value = '';
+const narrative = data.narrative || data.error || 'No response from server';
+document.getElementById('narrative').innerHTML = `<p>${narrative}</p>`;
+document.getElementById('actionInput').value = '';
       } catch (err) {
         document.getElementById('narrative').innerHTML = `<p>Error: ${err.message}</p>`;
       } finally {
