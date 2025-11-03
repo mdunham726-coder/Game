@@ -51,8 +51,17 @@ function l0Id(mx, my) {
   const row = String.fromCharCode('A'.charCodeAt(0) + mx);
   const col = (my + 1);
   return row + col;
+/**
+ * CELL KEY FORMAT (standardized)
+ * L1:${mx},${my}:${lx},${ly}
+ * mx,my = macro (L0) coords; lx,ly = local (L1) coords.
+ */
 }
-function byKey(mx, my, lx, ly) { return `M${mx}x${my}/L${lx}x${ly}`; }
+function byKey(mx, my, lx, ly) {
+  const imx = Math.floor(mx|0), imy = Math.floor(my|0);
+  const ilx = Math.floor(lx|0), ily = Math.floor(ly|0);
+  return `L1:${imx},${imy}:${ilx},${ily}`;
+}x${my}/L${lx}x${ly}`; }
 function siteId(mx, my, clusterId, segIndex) {
   return `M${mx}x${my}/S${clusterId}${segIndex != null ? ('#' + segIndex) : ''}`;
 }
@@ -261,6 +270,7 @@ function worldGenStep(state, input){
   // window + sites
   hydrateL1Window(state, deltas);
   exposeSitesInWindow(state, deltas);
+  normalizeCellKeys(state);
   return { state, deltas };
 }
 
@@ -652,6 +662,20 @@ function generateWorldFromDescription(state, description) {
   // and mark current content as custom.
   flagCustomWorld(state);
   return state;
+}
+
+
+function normalizeCellKeys(state) {
+  const cells = state?.world?.cells;
+  if (!cells || typeof cells !== 'object') return;
+  for (const [k, cell] of Object.entries(cells)) {
+    if (!cell || typeof cell !== 'object') continue;
+    const want = byKey(cell.mx, cell.my, cell.lx, cell.ly);
+    if (k !== want) {
+      delete cells[k];
+      cells[want] = { ...cell, id: want };
+    }
+  }
 }
 
 module.exports = { worldGenStep, exposeSitesInWindow, generateL1FeatureDescription, generateL2Settlement, generateL2POI, generateL3Building, hashSeedFromLocationID, makeLCG };

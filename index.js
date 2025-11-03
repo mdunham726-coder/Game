@@ -140,6 +140,9 @@ app.post('/narrate', async (req, res) => {
 
   const curKey = cellKey(pos.mx, pos.my, pos.lx, pos.ly);
   const cellsMap = (gameState?.world?.cells) || {};
+if (!cellsMap[curKey]) {
+  console.warn(`[DEBUG] Cell key mismatch: looking for ${curKey}, cells available:`, Object.keys(cellsMap).slice(0, 5));
+}
   const curCellRaw = cellsMap[curKey];
 
   const currentCell = {
@@ -194,6 +197,7 @@ app.post('/narrate', async (req, res) => {
       scene
     });
   }
+  console.log('[narrate] scene:', JSON.stringify(scene, null, 2));
 
   try {
     const response = await axios.post('https://api.deepseek.com/v1/chat/completions', {
