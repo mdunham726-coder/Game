@@ -207,7 +207,6 @@ function buildOutput(prevState, inputObj) {
 }
 
 // === Helpers (unchanged) ===
-function deepClone(obj){ return JSON.parse(JSON.stringify(obj || {})); }
 
 function ensureL1WindowHydrated(state, changes){
   if (!state.world || !state.world.cells) state.world.cells = {};
