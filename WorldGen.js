@@ -51,21 +51,17 @@ function l0Id(mx, my) {
   const row = String.fromCharCode('A'.charCodeAt(0) + mx);
   const col = (my + 1);
   return row + col;
+}
 /**
  * CELL KEY FORMAT (standardized)
  * L1:${mx},${my}:${lx},${ly}
  * mx,my = macro (L0) coords; lx,ly = local (L1) coords.
  */
-}
 function byKey(mx, my, lx, ly) {
   const imx = Math.floor(mx|0), imy = Math.floor(my|0);
   const ilx = Math.floor(lx|0), ily = Math.floor(ly|0);
   return `L1:${imx},${imy}:${ilx},${ily}`;
-}x${my}/L${lx}x${ly}`; }
-function siteId(mx, my, clusterId, segIndex) {
-  return `M${mx}x${my}/S${clusterId}${segIndex != null ? ('#' + segIndex) : ''}`;
 }
-
 // --- Core worldgen internals (same as v117/v118) ---
 function ensureMacro(state, mx, my) {
   const mmx = clamp(mx, 0, state.world.l0.w - 1);
