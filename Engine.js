@@ -4,64 +4,6 @@ const crypto = require('crypto');
 const WorldGen = require('./WorldGen');
 const Actions = require('./ActionProcessor');
 
-// === Routing Adapters ===
-function generateWorldFromDescriptionAdapter(state, description) {
-  console.log('[Engine] World prompt:', String(description).substring(0, 50));
-  if (WorldGen && typeof WorldGen.generateWorldFromDescription === 'function') {
-    return WorldGen.generateWorldFromDescription(state, String(description));
-  }
-  if (WorldGen && typeof WorldGen.initWorld === 'function') {
-    return WorldGen.initWorld(state, String(description));
-  }
-  if (WorldGen && typeof WorldGen.ensureWorld === 'function') {
-    return WorldGen.ensureWorld(state);
-  }
-  console.log('[Engine] No world generator found, using fallback');
-  return state;
-}
-
-function normalizeDir(raw) {
-  const s = String(raw || '').trim().toLowerCase();
-  const map = {
-    n: 'N', north: 'N', s: 'S', south: 'S',
-    e: 'E', east: 'E', w: 'W', west: 'W',
-    ne: 'NE', northeast: 'NE', nw: 'NW', northwest: 'NW',
-    se: 'SE', southeast: 'SE', sw: 'SW', southwest: 'SW'
-  };
-  return map[s] || null;
-}
-
-function applyMovementAdapter(state, dir) {
-  if (!dir) return state;
-  if (WorldGen && typeof WorldGen.parseAndApplyMovement === 'function') {
-    console.log('[Engine] Using WorldGen.parseAndApplyMovement');
-    return WorldGen.parseAndApplyMovement(state, dir);
-  }
-  if (WorldGen && typeof WorldGen.applyMovement === 'function') {
-    console.log('[Engine] Using WorldGen.applyMovement');
-    return WorldGen.applyMovement(state, dir);
-  }
-  console.log('[Engine] Using fallback movement');
-  const deltaMap = {
-    N: [0, -1], S: [0, 1], E: [1, 0], W: [-1, 0],
-    NE: [1, -1], NW: [-1, -1], SE: [1, 1], SW: [-1, 1]
-  };
-  const delta = deltaMap[dir];
-  if (!delta) return state;
-  const [dx, dy] = delta;
-  const world = state.world || {};
-  const pos = world.position || { mx: 0, my: 0, lx: 6, ly: 6 };
-  const maxX = (world.l1_default?.w || 12) - 1;
-  const maxY = (world.l1_default?.h || 12) - 1;
-  const newLx = Math.max(0, Math.min(maxX, (pos.lx || 0) + dx));
-  const newLy = Math.max(0, Math.min(maxY, (pos.ly || 0) + dy));
-  return {
-    ...state,
-    world: { ...world, position: { ...pos, lx: newLx, ly: newLy } }
-  };
-}
-// === End Adapters ===
-
 // Shared defaults must match modules
 const DEFAULTS = {
   L0_SIZE: { w: 8, h: 8 },
@@ -70,13 +12,31 @@ const DEFAULTS = {
 };
 
 function toISO8601(value) {
-  const d = value ? new Date(value) : new Date();
-  return d.toISOString();
+  if (typeof value === 'string' || typeof value === 'number') {
+    const d = new Date(value);
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
+  }
+  return new Date().toISOString();
 }
-
+function deepClone(input, seen = new WeakMap()) {
+  if (input === null || typeof input !== 'object') return input;
+  if (seen.has(input)) return seen.get(input);
+  if (Array.isArray(input)) {
+    const arr = [];
+    seen.set(input, arr);
+    for (const v of input) arr.push(deepClone(v, seen));
+    return arr;
+  }
+  if (input instanceof Date) return new Date(input.getTime());
+  if (input instanceof RegExp) return new RegExp(input.source, input.flags);
+  const out = {};
+  seen.set(input, out);
+  for (const k of Object.keys(input)) out[k] = deepClone(input[k], seen);
+  return out;
+}
 let TURN_SEQ = 0;
-function genTurnId(provided) {
-  if (provided) return String(provided);
+function genTurnId(userProvided) {
+  if (userProvided && typeof userProvided === 'string' && userProvided.trim().length > 0) return userProvided;
   const ts = Date.now();
   const pid = (typeof process !== 'undefined' && process && process.pid) ? process.pid : Math.floor(Math.random()*1e5);
   const rnd = Math.floor(Math.random()*1e9);
@@ -124,16 +84,15 @@ function initState(timestampUTC) {
       l0: { w: DEFAULTS.L0_SIZE.w, h: DEFAULTS.L0_SIZE.h },
       l1_default: { w: l1w, h: l1h },
       stream: { R: DEFAULTS.STREAM.R, P: DEFAULTS.STREAM.P },
-      position: { mx: 0, my: 0, lx: Math.floor(l1w/2), ly: Math.floor(l1h/2) },
-      cells: {},
-      l2_active: null,
-      l3_active: null,
-      current_layer: 1,
-      npcs: []
+      macro: {}, cells: {}, sites: {},
+      merchants: [], factions: [], npcs: [],
+      position: { mx: 0, my: 0, lx: Math.floor(l1w/2), ly: Math.floor(l1h/2) }
     },
-    counters: { state_rev: 0 },
+    ledger: { promotions: [] },
+    counters: { state_rev: 0, site_rev: 0, cell_rev: 0, inventory_rev: 0, merchant_state_rev: 0, faction_rev: 0 },
     fingerprint: {
       stable_fields: { schema_version: "1.1.0", world_seed: 0, ruleset_rev: 1 },
+      hash_alg: "SHA-256",
       hex_digest: "",
       hex_digest_stable: "",
       hex_digest_state: ""
@@ -147,16 +106,7 @@ function initState(timestampUTC) {
 function buildOutput(prevState, inputObj) {
   const nowUTC = toISO8601(inputObj && inputObj["timestamp_utc"]);
   const turnId = genTurnId(inputObj && inputObj["turn_id"]);
-  let state = prevState ? deepClone(prevState) : initState(nowUTC);
-  // Route based on intent kind
-  const kind = inputObj?.player_intent?.kind || 'FREEFORM';
-  const raw = inputObj?.player_intent?.raw || '';
-  if (kind === 'WORLD_PROMPT') {
-    state = generateWorldFromDescriptionAdapter(state, raw);
-  } else if (kind === 'MOVE') {
-    const dir = inputObj?.player_intent?.dir || normalizeDir(raw);
-    state = applyMovementAdapter(state, dir);
-  }
+  const state = prevState ? deepClone(prevState) : initState(nowUTC);
 
   const changes1 = [];
   const changes2 = [];
@@ -169,13 +119,37 @@ function buildOutput(prevState, inputObj) {
   // Phase C pre: expiry tick
   // Actions.tickMerchantsAndFactions(state, nowUTC, changes1, phaseFlags);
 
-  // Phase A: ensure L1 window hydrated & optional autodescription
-  ensureL1WindowHydrated(state, changes1);
-  ensureAutoCellDescriptions(state, changes1);
+  // Parse & apply player actions (non-movement)
+  const actions = Actions.parseIntent(inputObj ? inputObj["player_intent"] : "") || { action:'noop' };
+  Actions.applyPlayerActions(state, actions, changes1, phaseFlags);
 
-  // Phase B: apply player actions (non-movement here)
-  const actions = (inputObj && inputObj.player_actions) || [];
-  Actions.applyPlayerActions(state, actions, changes2, phaseFlags);
+  // WorldGen step (movement + streaming + site reveal)
+  const wg = WorldGen.worldGenStep(state, { actions });
+  // deltas are already pushed by worldGenStep to changes1-equivalent; merge:
+  if (wg && Array.isArray(wg.deltas)) {
+    for (const d of wg.deltas) changes1.push(d);
+  }
+
+  // L1 description pass: ensure each visible cell has a narrative description
+  if (state && state.world && state.world.cells) {
+    for (const id in state.world.cells) {
+      const cell = state.world.cells[id];
+      if (!cell) continue;
+      if (!cell.description && !cell.is_custom) {
+        const desc = WorldGen.generateL1FeatureDescription({
+          type: (cell.category || cell.tags?.category || "geography"),
+          subtype: (cell.type || cell.tags?.type || "default"),
+          mx: cell.mx ?? state.world.position.mx,
+          my: cell.my ?? state.world.position.my,
+          lx: cell.lx,
+          ly: cell.ly
+        });
+        cell.description = desc;
+        changes1.push({ op: "set", path: `/world/cells/${id}/description`, value: desc });
+      }
+    }
+  }
+
 
   // Digest inventory
   const invHex = Actions.computeInventoryDigestHex(state);
@@ -183,175 +157,189 @@ function buildOutput(prevState, inputObj) {
 
   // Turn counter + periodic regen
   state.turn_counter = (state.turn_counter|0) + 1;
+  if (state.turn_counter % 10 === 0) Actions.merchantRegenOnTurn(state, nowUTC, changes1, phaseFlags);
 
-  // Fingerprints
-  state.fingerprint.hex_digest_stable = stateFingerprintStableHex(state);
-  state.fingerprint.hex_digest_state = crypto.createHash('sha256')
-    .update(JSON.stringify(state),'utf8').digest('hex');
-  state.fingerprint.hex_digest = stateFingerprintFullHex(state);
+  // Counters
+  if (phaseFlags.inventory_rev) { state.counters.inventory_rev = (state.counters.inventory_rev|0) + 1; changes1.push({ op:'inc', path:'/counters/inventory_rev', value:1 }); }
+  if (phaseFlags.merchant_state_rev) { state.counters.merchant_state_rev = (state.counters.merchant_state_rev|0) + 1; changes1.push({ op:'inc', path:'/counters/merchant_state_rev', value:1 }); }
 
-  // History entry
-  const hist = {
+  if (changes1.length > 0) {
+    state.counters.state_rev = (state.counters.state_rev|0) + 1;
+    changes1.push({ op:"inc", path:"/counters/state_rev", value:1 });
+  }
+
+  const pos = state.world.position;
+  const planMeta = (function(){
+    const macroKey = `${pos.mx},${pos.my}`;
+    const macro = state.world.macro && state.world.macro[macroKey];
+    const sp = macro && macro.site_plan;
+    return sp ? sp.meta : null;
+  })();
+
+  const known = new Set();
+  for (const id in state.world.cells) {
+    const c = state.world.cells[id];
+    if (c.mx !== pos.mx || c.my !== pos.my) continue;
+    if (c.hydrated) known.add(`M${c.mx}x${c.my}/L${c.lx}x${c.ly}`);
+  }
+  const macro = state.world.macro[`${pos.mx},${pos.my}`];
+  const plan = macro && macro.site_plan || { clusters: [] };
+  const cluster_meta = plan.clusters.map(cl => {
+    const visible_cells = [];
+    for (const seg of cl.cells) {
+      const k = `M${pos.mx}x${pos.my}/L${seg.lx}x${seg.ly}`;
+      if (known.has(k)) visible_cells.push({ lx: seg.lx, ly: seg.ly });
+    }
+    return { cluster_id: cl.cluster_id, tier: cl.tier, total_segments: cl.cells.length, visible_segments: visible_cells.length, visible_cells };
+  });
+
+  const delta1 = {
+    turn_id: turnId,
+    labels: ["PLAYER","INVENTORY","QUESTS","WORLD","CELLS","SITES","MERCHANTS","FACTIONS","COUNTERS"],
+    changes: changes1,
+    post_state_facts: {
+      position: { ...state.world.position },
+      l0_id: l0Id(pos.mx,pos.my),
+      l1_dims: { ...state.world.l1_default },
+      stream: { ...state.world.stream },
+      cluster_meta,
+      site_plan_meta: planMeta,
+      inventory_digest: state.digests.inventory_digest
+    }
+  };
+
+  const history_entry = {
     turn_id: turnId,
     timestamp_utc: nowUTC,
-    labels: ["PLAYER","INVENTORY","QUESTS","WORLD","MERCHANTS","FACTIONS","DIGESTS","COUNTERS"],
-    changes: changes1.concat(changes2)
+    intent: (inputObj && inputObj["player_intent"]) || "",
+    summary: (actions.action === 'move' ? `You move ${actions.dir?.toUpperCase()}.` :
+             (actions.action==='look' ? "You look around." :
+             (actions.action==='take' ? `You try to take ${actions.target||''}.` :
+             (actions.action==='drop' ? `You drop ${actions.target||''}.` : "Time passes."))))
   };
   if (!Array.isArray(state.history)) state.history = [];
-  state.history.push(hist);
+  state.history.push(history_entry);
 
-  return {
-    state,
-    deltas: hist.changes
+  const fpStable = stateFingerprintStableHex(state);
+  const fpState  = stateFingerprintFullHex(state);
+  state.fingerprint.hex_digest_stable = fpStable;
+  state.fingerprint.hex_digest_state  = fpState;
+  state.fingerprint.hex_digest        = fpState;
+
+  const delta2 = {
+    turn_id: turnId,
+    labels: ["HISTORY","FINGERPRINT"],
+    changes: [
+      { op:"add", path:"/history/-", value: history_entry },
+      { op:"set", path:"/fingerprint/hex_digest_stable", value: fpStable },
+      { op:"set", path:"/fingerprint/hex_digest_state",  value: fpState },
+      { op:"set", path:"/fingerprint/hex_digest",        value: fpState }
+    ],
+    post_state_facts: {
+      summary: {
+        cells_total: Object.keys(state.world.cells).length,
+        sites_total: Object.keys(state.world.sites).length
+      },
+      fingerprint: fpState
+    }
   };
+
+  const blocks = [];
+  blocks.push("[STATE-DELTA 1/2]\n" + JSON.stringify(delta1, null, 2));
+  blocks.push("[STATE-DELTA 2/2]\n" + JSON.stringify(delta2, null, 2));
+  return { blocks, state };
 }
 
-// === Helpers (unchanged) ===
-
-function ensureL1WindowHydrated(state, changes){
-  if (!state.world || !state.world.cells) state.world.cells = {};
-  // Hydrate a simple window around current position if missing
-  const w = state.world.l1_default.w, h = state.world.l1_default.h;
-  const pos = state.world.position;
-  const R = state.world.stream.R;
-  for (let dx = -R; dx <= R; dx++){
-    for (let dy = -R; dy <= R; dy++){
-      const lx = Math.max(0, Math.min(w-1, pos.lx + dx));
-      const ly = Math.max(0, Math.min(h-1, pos.ly + dy));
-      const id = `L1:${pos.mx},${pos.my}:${lx},${ly}`;
-      if (!state.world.cells[id]){
-        state.world.cells[id] = { id, mx: pos.mx, my: pos.my, lx, ly, type: "plain", subtype: "grass" };
-        changes.push({ op:"set", path:`/world/cells/${id}`, value: state.world.cells[id] });
+// CLI harness (compatible with v118 workflow)
+function main() {
+  const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+  let buf = '';
+  rl.on('line', line => { buf += line + '\n'; });
+  rl.on('close', () => {
+    buf = buf.trim();
+    try {
+      const inputObj = JSON.parse(buf || "{}");
+      const prev = inputObj.previous_state || null;
+      const { blocks } = buildOutput(prev, inputObj);
+      for (let i = 0; i < blocks.length; i++) {
+        process.stdout.write(blocks[i]);
+        if (i < blocks.length - 1) process.stdout.write('\n\n');
       }
+    } catch (e) {
+      process.stdout.write(JSON.stringify({ error:"INVALID_INPUT_JSON", detail:String(e && e.message || e) }));
+      process.exit(1);
     }
-  }
+  });
 }
-function ensureAutoCellDescriptions(state, changes){
-  const cells = state.world.cells || {};
-  for (const id of Object.keys(cells)){
-    const cell = cells[id];
-    if (!cell.description){
-      const desc = `You see ${cell.subtype} at (${cell.lx},${cell.ly}) in ${l0Id(cell.mx, cell.my)}.`;
-      cell.description = desc;
-      changes.push({ op:"set", path:`/world/cells/${id}/description`, value: desc });
-    }
-  }
-}
-// === Layer Transition Adapters (restored) ===
+if (require.main === module) main();
+
+
+/**
+ * Enter an L2 location (settlement or POI) from an L1 cell.
+ */
 function enterL2FromL1(state, l1_cell_data) {
-  if (WorldGen && typeof WorldGen.enterL2FromL1 === 'function') {
-    return WorldGen.enterL2FromL1(state, l1_cell_data);
+  if (!state || !state.world || !l1_cell_data) return null;
+  const { mx, my, lx, ly, type, subtype } = l1_cell_data;
+  const l2_id = `M${mx}x${my}/L1_${lx}_${ly}_${subtype}`;
+  let npcs_here = [];
+  if (Array.isArray(state.world.npcs)) {
+    npcs_here = state.world.npcs.filter(n => n && (n.home_location === l2_id || n.site_id === l2_id));
   }
-  return state;
+  let l2 = null;
+  if (type === "settlement") {
+    l2 = WorldGen.generateL2Settlement(l2_id, subtype, npcs_here);
+  } else if (type === "poi") {
+    l2 = WorldGen.generateL2POI(l2_id, subtype);
+  } else {
+    // fallback: treat as structure
+    l2 = WorldGen.generateL2POI(l2_id, "structure");
+  }
+  state.world.l2_active = l2;
+  state.world.l3_active = null;
+  state.world.current_layer = 2;
+  if (!state.player) state.player = {};
+  state.player.layer = 2;
+  state.player.position = { x: 0, y: 0 };
+  return l2;
 }
+
+/**
+ * Enter an L3 building from currently active L2.
+ */
 function enterL3FromL2(state, building_id_short) {
-  if (WorldGen && typeof WorldGen.enterL3FromL2 === 'function') {
-    return WorldGen.enterL3FromL2(state, building_id_short);
-  }
-  return state;
+  if (!state || !state.world || !state.world.l2_active) return null;
+  const l2 = state.world.l2_active;
+  const bld = l2.buildings[building_id_short];
+  if (!bld) return null;
+  const full_id = `${l2.settlement_id}_${building_id_short}`;
+  const l3 = WorldGen.generateL3Building(full_id, bld);
+  state.world.l3_active = l3;
+  state.world.current_layer = 3;
+  if (!state.player) state.player = {};
+  state.player.layer = 3;
+  return l3;
 }
+
+/**
+ * Exit back to L1 from L2.
+ */
 function exitL2ToL1(state) {
-  if (WorldGen && typeof WorldGen.exitL2ToL1 === 'function') {
-    return WorldGen.exitL2ToL1(state);
-  }
-  return state;
+  if (!state || !state.world) return;
+  state.world.l2_active = null;
+  state.world.current_layer = 1;
+  if (!state.player) state.player = {};
+  state.player.layer = 1;
 }
+
+/**
+ * Exit back to L2 from L3.
+ */
 function exitL3ToL2(state) {
-  if (WorldGen && typeof WorldGen.exitL3ToL2 === 'function') {
-    return WorldGen.exitL3ToL2(state);
-  }
-  return state;
+  if (!state || !state.world) return;
+  state.world.l3_active = null;
+  state.world.current_layer = 2;
+  if (!state.player) state.player = {};
+  state.player.layer = 2;
 }
 
-// === deepClone (restored full implementation) ===
-function deepClone(input, seen = new WeakMap()) {
-  if (input === null || typeof input !== 'object') return input;
-
-  if (seen.has(input)) return seen.get(input);
-
-  // Date
-  if (input instanceof Date) return new Date(input.getTime());
-
-  // RegExp
-  if (input instanceof RegExp) {
-    const re = new RegExp(input.source, input.flags);
-    re.lastIndex = input.lastIndex;
-    return re;
-  }
-
-  // Buffer (Node.js)
-  if (typeof Buffer !== 'undefined' && Buffer.isBuffer && Buffer.isBuffer(input)) {
-    const out = Buffer.allocUnsafe(input.length);
-    input.copy(out);
-    return out;
-  }
-
-  // Typed arrays
-  const typedArrayNames = [
-    'Int8Array','Uint8Array','Uint8ClampedArray','Int16Array','Uint16Array',
-    'Int32Array','Uint32Array','Float32Array','Float64Array','BigInt64Array','BigUint64Array'
-  ];
-  for (const name of typedArrayNames) {
-    if (typeof globalThis[name] === 'function' && input instanceof globalThis[name]) {
-      return new globalThis[name](input);
-    }
-  }
-
-  // Map
-  if (input instanceof Map) {
-    const out = new Map();
-    seen.set(input, out);
-    for (const [k,v] of input.entries()) {
-      out.set(deepClone(k, seen), deepClone(v, seen));
-    }
-    return out;
-  }
-
-  // Set
-  if (input instanceof Set) {
-    const out = new Set();
-    seen.set(input, out);
-    for (const v of input.values()) {
-      out.add(deepClone(v, seen));
-    }
-    return out;
-  }
-
-  // Array
-  if (Array.isArray(input)) {
-    const out = new Array(input.length);
-    seen.set(input, out);
-    for (let i = 0; i < input.length; i++) {
-      out[i] = deepClone(input[i], seen);
-    }
-    return out;
-  }
-
-  // Plain Object (preserve prototype if not null)
-  const proto = Object.getPrototypeOf(input);
-  const out = Object.create(proto === null ? null : proto);
-  seen.set(input, out);
-  for (const key of Reflect.ownKeys(input)) {
-    const desc = Object.getOwnPropertyDescriptor(input, key);
-    if (desc) {
-      if ('value' in desc) {
-        desc.value = deepClone(input[key], seen);
-      }
-      try {
-        Object.defineProperty(out, key, desc);
-      } catch (_) {
-        // Fallback if property is non-configurable on target
-        out[key] = desc && 'value' in desc ? desc.value : input[key];
-      }
-    } else {
-      out[key] = deepClone(input[key], seen);
-    }
-  }
-  return out;
-}
-
-// Update exports to include restored functions
-module.exports = {
-  initState, buildOutput,
-  enterL2FromL1, enterL3FromL2, exitL2ToL1, exitL3ToL2
-};
+module.exports = { buildOutput, initState, enterL2FromL1, enterL3FromL2, exitL2ToL1, exitL3ToL2 };

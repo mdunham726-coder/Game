@@ -3,25 +3,11 @@ const express = require('express');
 const axios = require('axios');
 const Engine = require('./Engine.js');
 const WorldGen = require('./WorldGen.js');
-const Actions = require('./ActionProcessor.js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
-
-function mapActionToInput(action, kind = "FREEFORM") {
-  return {
-    player_intent: {
-      kind: kind,
-      raw: String(action)
-    },
-    meta: {
-      source: "frontend",
-      ts: new Date().toISOString()
-    }
-  };
-}
 
 let gameState = null;
 let isFirstTurn = true;
@@ -50,14 +36,7 @@ app.get('/', (req, res) => {
   res.sendFile(htmlPath);
 });
 
-app.post('/init', (req, res) => {
-  const result = initializeGame();
-  return res.json(result);
-});
-
-app.post('/reset', (req, res) => {
-  gameState = null;
-  isFirstTurn = true;
+app.get('/init', (req, res) => {
   const result = initializeGame();
   return res.json(result);
 });
@@ -82,47 +61,36 @@ app.post('/narrate', async (req, res) => {
       restart: true
     });
   }
+  const beforeCells = Object.keys(gameState?.world?.cells || {}).length;
+  console.log('[turn] cells_before=', beforeCells);
 
-  let engineOutput = null;
   if (isFirstTurn === true) {
     isFirstTurn = false;
-    const inputObj = mapActionToInput(action, "WORLD_PROMPT");
-    try {
-      engineOutput = Engine.buildOutput(gameState, inputObj);
-      if (engineOutput && engineOutput.state) {
-        gameState = engineOutput.state;
-      }
-    } catch (err) {
-      console.error('Engine error on first turn:', err.message);
-      return res.json({ 
-        error: `engine_failed: ${err.message}`, 
-        narrative: "The engine encountered an error initializing the world.",
-        state: gameState 
-      });
-    }
-  }
-  try {
-    if (!Engine.buildOutput) {
-      throw new Error('Engine.buildOutput is not a function');
-    }
-    const parsed = Actions.parseIntent(action);
-    const inferredKind = (parsed && parsed.action === "move") ? "MOVE" : "FREEFORM";
-    const inputObj = mapActionToInput(action, inferredKind);
-    if (parsed && parsed.action === "move" && parsed.dir) {
-      inputObj.player_intent.dir = parsed.dir;
-    }
-    engineOutput = Engine.buildOutput(gameState, inputObj);
-    if (engineOutput && engineOutput.state) {
-      gameState = engineOutput.state;
-    }
-  } catch (err) {
-    console.error('Engine error:', err.message);
-    return res.json({ 
-      error: `engine_failed: ${err.message}`, 
-      narrative: "The engine encountered an error processing your action.",
-      state: gameState 
+    return res.json({
+      narrative: action,
+      state: gameState,
+      engine_output: null
     });
   }
+  let engineOutput = null;
+try {
+  if (!Engine.buildOutput) {
+    throw new Error('Engine.buildOutput is not a function');
+  }
+  engineOutput = Engine.buildOutput(gameState, action);
+  if (engineOutput && engineOutput.state) {
+    gameState = engineOutput.state;
+  }
+} catch (err) {
+  console.error('Engine error:', err.message);
+  return res.json({ 
+    error: `engine_failed: ${err.message}`, 
+    narrative: "The engine encountered an error processing your action.",
+    state: gameState 
+  });
+}
+  const afterCells = Object.keys(gameState?.world?.cells || {}).length;
+  console.log('[turn] cells_after=', afterCells);
 
   const scene = {
     playerLocation: gameState.player?.mx || 'unknown',
@@ -131,7 +99,6 @@ app.post('/narrate', async (req, res) => {
     npcs: (gameState.world?.npcs || []).filter(n => n.location === gameState.player?.mx),
     engineDeltas: engineOutput?.deltas || []
   };
-
   if (!process.env.DEEPSEEK_API_KEY) {
     return res.json({ 
       error: 'DEEPSEEK_API_KEY not set',
@@ -140,7 +107,6 @@ app.post('/narrate', async (req, res) => {
       engine_output: engineOutput
     });
   }
-
   try {
     const response = await axios.post('https://api.deepseek.com/v1/chat/completions', {
       model: 'deepseek-chat',
@@ -158,14 +124,11 @@ Player action: "${action}"
 
 Narrate what happens next in 2-3 sentences, grounded in the actual game state.`
       }],
-      temperature: 0.7
+      max_tokens: 300,
+      temperature: 0.8
     }, {
-      headers: {
-        'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-        'Content-Type': 'application/json'
-      }
+      headers: { 'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}` }
     });
-
     const narrative = response.data.choices[0].message.content;
     return res.json({ narrative, state: gameState, engine_output: engineOutput });
   } catch (err) {
@@ -178,43 +141,14 @@ Narrate what happens next in 2-3 sentences, grounded in the actual game state.`
     });
   }
 });
-app.post('/debug', async (req, res) => {
-  const { action } = req.body;
-  
-  if (!gameState) {
-    return res.json({ error: 'No game state exists' });
-  }
 
-  // Parse and process the action through engine
-  const parsed = Actions.parseIntent(action);
-  const inferredKind = (parsed && parsed.action === "move") ? "MOVE" : "FREEFORM";
-  const inputObj = mapActionToInput(action, inferredKind);
-  if (parsed && parsed.action === "move" && parsed.dir) {
-    inputObj.player_intent.dir = parsed.dir;
-  }
-
-  let engineOutput = null;
-  try {
-    engineOutput = Engine.buildOutput(gameState, inputObj);
-    if (engineOutput && engineOutput.state) {
-      gameState = engineOutput.state;
-    }
-  } catch (err) {
-    return res.json({ error: err.message });
-  }
-
-  // Return RAW technical data - no DeepSeek narrative
-  return res.json({
-    raw_state: gameState,
-    engine_output: engineOutput,
-    parsed_action: parsed,
-    current_position: gameState.world?.position,
-    current_cell: gameState.world?.cells?.[`L1:${gameState.world?.position?.mx},${gameState.world?.position?.my}:${gameState.world?.position?.lx},${gameState.world?.position?.ly}`],
-    all_cells: Object.keys(gameState.world?.cells || {}),
-    npcs: gameState.world?.npcs || [],
-    inventory: gameState.player?.inventory || []
-  });
+app.post('/reset', (req, res) => {
+  gameState = null;
+  isFirstTurn = true;
+  const result = initializeGame();
+  return res.json(result);
 });
+
 app.get('/status', (req, res) => {
   return res.json({
     status: 'running',
