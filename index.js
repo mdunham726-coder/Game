@@ -200,7 +200,8 @@ app.post('/narrate', async (req, res) => {
       model: 'deepseek-chat',
       messages: [{
         role: 'user',
-        content: `- Translate engine output (terrain types, cell descriptions, entity lists) into vivid, coherent prose
+        content: `You are narrating an interactive roguelike game driven by a procedural engine.
+- Translate engine output (terrain types, cell descriptions, entity lists) into vivid, coherent prose
 - Maintain environmental consistency: terrain types define what the player can see and interact with
 - Build narrative tension through descriptions of current terrain and environmental features
 - React to player action by describing immediate sensory consequences within the game world
@@ -221,11 +222,20 @@ NPCs PRESENT: ${scene.npcs && scene.npcs.length > 0 ? JSON.stringify(scene.npcs)
 Player action: "${action}"
 
 CONSTRAINTS:
+- If the player input is in parentheses (OOC), break character immediately and answer their technical question directly
 - Narrate ONLY what the player can see based on current location and adjacent areas
 - Do NOT invent dungeons, doors, or architecture not mentioned above
 - Do NOT reference locations you weren't provided
-- If the player input is in parentheses (OOC), break character immediately. Answer technical questions about game state, engine behavior, or narration logic directly and clearly. Do not roleplay.
-- Write two full paragraphs of immersive description.`
+- Write two full paragraphs of immersive description`
+DEBUG_FOOTER:
+At the end of your narration, append this metadata block:
+---DEBUG---
+current_cell: ${scene.currentCell.type}/${scene.currentCell.subtype}
+cell_description: ${scene.currentCell.description.substring(0, 50)}...
+adjacent_cells: [${scene.nearbyCells.map(c => c.dir + ':' + c.type).join(', ')}]
+npcs_count: ${scene.npcs.length}
+inventory_count: ${scene.inventory.length}
+---END_DEBUG---`
       }],
       temperature: 0.7
     }, {
