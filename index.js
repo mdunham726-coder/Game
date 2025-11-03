@@ -1,90 +1,145 @@
+const path = require('path');
 const express = require('express');
-const WorldGen = require('./WorldGen.v4.patched (1)');
-const Engine = require('./Engine.v6.patched (1)');
 const axios = require('axios');
+const Engine = require('./Engine.js');
+const WorldGen = require('./WorldGen.js');
+
 const app = express();
+const PORT = process.env.PORT || 3000;
+
 app.use(express.json());
 
 let gameState = null;
+let isFirstTurn = true;
 
+// Initialize a new game world
 function initializeGame() {
-  const world = WorldGen.generateWorld();
-  gameState = Engine.initState();
-  gameState.world = world;
-  return gameState;
+  let state = null;
+  
+  if (Engine && typeof Engine.initState === 'function') {
+    state = Engine.initState();
+  } else {
+    state = {
+      player: { mx: 0, my: 0, layer: 1, inventory: [] },
+      world: { npcs: [], cells: {}, l2_active: null, l3_active: null, current_layer: 1 }
+    };
+  }
+  
+  gameState = state;
+  isFirstTurn = true;
+  
+  return {
+    status: "world_created",
+    state: gameState,
+    prompt: "Describe your world in 3 sentences."
+  };
 }
 
-// Initialize on startup
-gameState = initializeGame();
-
+// GET / - Serve the HTML
 app.get('/', (req, res) => {
-  res.send(`<!DOCTYPE html>
-<html>
-<head>
-  <title>Roguelike Game</title>
-  <style>
-    body { background: #1a1a1a; color: #fff; font-family: Arial; padding: 20px; }
-    #output { background: #000; padding: 10px; margin: 10px 0; height: 200px; overflow-y: auto; }
-    input { width: 80%; padding: 8px; }
-    button { padding: 8px 15px; background: #444; color: #fff; cursor: pointer; }
-  </style>
-</head>
-<body>
-  <h1>Roguelike Adventure</h1>
-  <div id="output">Game starting...</div>
-  <input id="action" type="text" placeholder="Enter action...">
-  <button onclick="submitAction()">Submit</button>
-  <script>
-    async function submitAction() {
-      const action = document.getElementById('action').value;
-      const resp = await fetch('/narrate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action })
-      });
-      const data = await resp.json();
-      document.getElementById('output').innerHTML += '<p>' + data.narrative + '</p>';
-      document.getElementById('action').value = '';
-    }
-  </script>
-</body>
-</html>`);
+  const htmlPath = path.join(__dirname, 'Index.html');
+  res.sendFile(htmlPath);
 });
 
-app.get('/status', (req, res) => {
-  res.json({ message: 'Roguelike engine running!', state: gameState });
+// GET /init - Initialize a new game
+app.get('/init', (req, res) => {
+  const result = initializeGame();
+  return res.json(result);
 });
 
+// POST /narrate - Process player action
 app.post('/narrate', async (req, res) => {
   const { action } = req.body;
   
-  if (!gameState) {
-    gameState = initializeGame();
+  if (!action) {
+    return res.status(400).json({ error: 'action is required' });
   }
   
+  // Guard: Initialize if null
+  if (gameState === null) {
+    const init = initializeGame();
+    gameState = init.state;
+  }
+  
+  // Check for restart keywords
+  const restartKeywords = ["new world", "restart", "begin again"];
+  const actionLower = action.toLowerCase();
+  
+  if (restartKeywords.some(kw => actionLower.includes(kw))) {
+    const init = initializeGame();
+    gameState = init.state;
+    return res.json({
+      narrative: "Describe your world in 3 sentences.",
+      state: gameState,
+      restart: true
+    });
+  }
+  
+  // First-turn override: always prompt for world description on first action
+  if (isFirstTurn === true) {
+    isFirstTurn = false;
+    return res.json({
+      narrative: "Describe your world in 3 sentences.",
+      state: gameState,
+      engine_output: null
+    });
+  }
+  
+  // Call Engine to process action
+  let engineOutput = null;
+  try {
+    engineOutput = Engine.buildOutput(gameState, action);
+    
+    // If buildOutput returns a new state, reassign; otherwise assume mutation in place
+    if (engineOutput && engineOutput.state) {
+      gameState = engineOutput.state;
+    }
+  } catch (err) {
+    console.error('Engine error:', err.message);
+    return res.json({ 
+      error: "engine_failed", 
+      details: err.message,
+      state: gameState 
+    });
+  }
+  
+  // Extract scene data from gameState
+  const scene = {
+    playerLocation: gameState.player?.mx || 'unknown',
+    playerLayer: gameState.player?.layer || 0,
+    playerInventory: gameState.player?.inventory || [],
+    npcs: (gameState.world?.npcs || []).filter(n => 
+      n.location === gameState.player?.mx
+    ),
+    engineDeltas: engineOutput?.deltas || []
+  };
+  
+  // Call DeepSeek for narration
   if (!process.env.DEEPSEEK_API_KEY) {
-    return res.status(500).json({ error: 'DEEPSEEK_API_KEY not set' });
+    return res.json({ 
+      error: 'DEEPSEEK_API_KEY not set',
+      narrative: "The engine processes your action.",
+      state: gameState,
+      engine_output: engineOutput
+    });
   }
   
   try {
-    // Apply action to game state
-    gameState = Engine.buildOutput(gameState, action);
-    
-    // Send DeepSeek the REAL world state + action
     const response = await axios.post('https://api.deepseek.com/v1/chat/completions', {
       model: 'deepseek-chat',
       messages: [{
         role: 'user',
-        content: `You are a dungeon master narrating a fantasy adventure. Current game state:
+        content: `You are a dungeon master narrating a roguelike adventure.
 
-World: ${JSON.stringify(gameState.world, null, 2)}
-Player Location: ${gameState.player?.location || 'unknown'}
-Nearby NPCs: ${JSON.stringify(gameState.world?.npcs?.filter(n => n.location === gameState.player?.location) || [], null, 2)}
-Player Inventory: ${JSON.stringify(gameState.player?.inventory || [], null, 2)}
+Current world state:
+- Player location: ${scene.playerLocation}
+- Player layer: ${scene.playerLayer}
+- Inventory: ${JSON.stringify(scene.playerInventory)}
+- NPCs nearby: ${JSON.stringify(scene.npcs)}
 
 Player action: "${action}"
 
-Narrate what happens next in 2-3 sentences, considering the actual world state.`
+Narrate what happens next in 2-3 sentences, grounded in the actual game state.`
       }],
       max_tokens: 300,
       temperature: 0.8
@@ -92,16 +147,42 @@ Narrate what happens next in 2-3 sentences, considering the actual world state.`
       headers: { 'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}` }
     });
     
-    res.json({ 
-      narrative: response.data.choices[0].message.content,
-      state: gameState 
+    const narrative = response.data.choices[0].message.content;
+    return res.json({ 
+      narrative, 
+      state: gameState, 
+      engine_output: engineOutput 
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('DeepSeek error:', err.message);
+    return res.json({ 
+      narrative: "The engine processes your action.",
+      state: gameState,
+      engine_output: engineOutput,
+      error: err.message
+    });
   }
 });
 
-const PORT = process.env.PORT || 3000;
+// POST /reset - Reset the game
+app.post('/reset', (req, res) => {
+  gameState = null;
+  isFirstTurn = true;
+  const result = initializeGame();
+  return res.json(result);
+});
+
+// GET /status - Debug endpoint
+app.get('/status', (req, res) => {
+  return res.json({
+    status: 'running',
+    hasGameState: gameState !== null,
+    isFirstTurn: isFirstTurn,
+    playerLocation: gameState?.player?.mx || null
+  });
+});
+
+// Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
