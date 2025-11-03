@@ -1,8 +1,8 @@
 // Engine.js — orchestrator; preserves v118 behavior byte-for-byte on state
 const readline = require('readline');
 const crypto = require('crypto');
-const WorldGen = require('./WorldGen.v4.patched (1)');
-const Actions = require('./ActionProcessor.v2.patched');
+const WorldGen = require('./WorldGen');
+const Actions = require('./ActionProcessor');
 
 // Shared defaults must match modules
 const DEFAULTS = {
