@@ -70,19 +70,22 @@ app.post('/narrate', async (req, res) => {
     });
   }
   let engineOutput = null;
-  try {
-    engineOutput = Engine.buildOutput(gameState, action);
-    if (engineOutput && engineOutput.state) {
-      gameState = engineOutput.state;
-    }
-  } catch (err) {
-    console.error('Engine error:', err.message);
-    return res.json({ 
-      error: "engine_failed", 
-      details: err.message,
-      state: gameState 
-    });
+try {
+  if (!Engine.buildOutput) {
+    throw new Error('Engine.buildOutput is not a function');
   }
+  engineOutput = Engine.buildOutput(gameState, action);
+  if (engineOutput && engineOutput.state) {
+    gameState = engineOutput.state;
+  }
+} catch (err) {
+  console.error('Engine error:', err.message);
+  return res.json({ 
+    error: `engine_failed: ${err.message}`, 
+    narrative: "The engine encountered an error processing your action.",
+    state: gameState 
+  });
+}
   const scene = {
     playerLocation: gameState.player?.mx || 'unknown',
     playerLayer: gameState.player?.layer || 0,
