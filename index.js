@@ -16,12 +16,6 @@ function initializeGame() {
   let state = null;
   if (Engine && typeof Engine.initState === 'function') {
     state = Engine.initState();
-  } else {
-    state = {
-      player: { mx: 0, my: 0, layer: 1, inventory: [] },
-      world: { npcs: [], cells: {}, l2_active: null, l3_active: null, current_layer: 1 }
-    };
-  }
   gameState = state;
   isFirstTurn = true;
   return {
