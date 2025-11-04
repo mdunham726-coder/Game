@@ -46,6 +46,33 @@ const TERRAIN_TYPES = {
   ]
 };
 
+// Keyword matching for world descriptions (9 simple biomes)
+const BIOME_KEYWORDS = {
+  urban: ["city", "town", "urban", "street", "building", "taco bell", "store", "shop", "modern", "2025", "2024", "mall", "apartment"],
+  rural: ["farm", "village", "countryside", "pastoral", "field", "barn", "cottage", "hamlet", "ranch"],
+  forest: ["forest", "woods", "trees", "grove", "woodland", "timber"],
+  desert: ["desert", "sand", "dunes", "dry", "arid", "scorching", "wasteland", "barren", "sahara"],
+  tundra: ["snow", "ice", "arctic", "frozen", "tundra", "glacier", "winter", "cold"],
+  jungle: ["jungle", "rainforest", "tropical", "humid", "vines", "exotic", "canopy"],
+  coast: ["beach", "ocean", "coast", "port", "harbor", "shore", "sea", "waves", "surf"],
+  mountain: ["mountain", "peak", "alpine", "cliff", "summit", "highland", "elevation"],
+  wetland: ["swamp", "marsh", "bog", "wetland", "murky", "mire"]
+};
+
+// Terrain palettes for each biome
+const BIOME_PALETTES = {
+  urban: ["plains_grassland", "meadow", "hills_rolling", "scrubland", "river_crossing", "stream"],
+  rural: ["plains_grassland", "plains_wildflower", "meadow", "forest_deciduous", "hills_rolling", "river_crossing", "stream"],
+  forest: ["forest_deciduous", "forest_mixed", "forest_coniferous", "meadow", "stream", "hills_rolling"],
+  desert: ["desert_sand", "desert_dunes", "desert_rocky", "scrubland", "badlands", "canyon", "mesa"],
+  tundra: ["tundra", "snowfield", "ice_sheet", "permafrost", "alpine"],
+  jungle: ["forest_coniferous", "meadow", "swamp", "marsh", "river_crossing", "stream", "wetland"],
+  coast: ["beach_sand", "beach_pebble", "cliffs_coastal", "tidepools", "dunes_coastal", "scrubland", "plains_grassland"],
+  mountain: ["mountain_slopes", "mountain_peak", "mountain_pass", "rocky_terrain", "scree", "alpine", "hills_rocky"],
+  wetland: ["swamp", "marsh", "wetland", "bog", "stream", "river_crossing"]
+};
+
+
 
 
 // --- RNG / Helpers (identical behavior) ---
@@ -193,15 +220,27 @@ function planSitesForMacro(state, mx, my) {
 }
 
 
-function pickTerrainType(seed, mx, my, lx, ly) {
-  const types = TERRAIN_TYPES.geography;
+function pickTerrainType(seed, mx, my, lx, ly, state) {
+  // Check if world has a macro biome set
+  let types = TERRAIN_TYPES.geography;
+  
+  if (state && state.world && state.world.macro_biome) {
+    const palette = BIOME_PALETTES[state.world.macro_biome];
+    if (palette && palette.length > 0) {
+      types = palette;
+    }
+  }
+  
+  // Deterministic pick from palette
   const cellSeed = h32(`${seed}|terrain|${mx}|${my}|${lx}|${ly}`);
   const rng = mulberry32(cellSeed);
   const idx = Math.floor(rng() * types.length);
-  return { type: "geography", subtype: types[idx] };
+  
+  return { 
+    type: "geography", 
+    subtype: types[idx] 
+  };
 }
-
-
 function hydrateL1Window(state, deltas) {
   const { R, P } = state.world.stream;
   const pos = state.world.position;
@@ -213,7 +252,7 @@ function hydrateL1Window(state, deltas) {
     const id = byKey(pos.mx,pos.my,lx,ly);
     let c = state.world.cells[id];
     if (!c) {
-      const terrain = pickTerrainType(state.rng_seed || 0, pos.mx, pos.my, lx, ly);
+      const terrain = pickTerrainType(state.rng_seed || 0, pos.mx, pos.my, lx, ly, state);
 const desc = generateL1FeatureDescription({ type: terrain.type, subtype: terrain.subtype, mx: pos.mx, my: pos.my, lx, ly });
 c = state.world.cells[id] = { id, mx: pos.mx, my: pos.my, lx, ly, type: terrain.type, subtype: terrain.subtype, description: desc, known: true, hydrated: !!hydrated, tags: {} };
       if (!changed.has(id)) {
@@ -371,92 +410,17 @@ const POI_SIZES = {
   structure: { width: 2, height: 2 }
 };
 
-const L1_DESCRIPTION_TEMPLATES = {
-  settlement: {
-    hut: [
-      "A lonely hut stands here, smoke curling lazily from its chimney.",
-      "A small homestead sits on the rise, with signs of recent activity."
-    ],
-    village: [
-      "A small village nestles in the valley. Smoke rises from clustered roofs.",
-      "A ring of cottages surrounds a central well. Voices carry on the wind."
-    ],
-    town: [
-      "A bustling town square anchors this place. Merchants shout over one another.",
-      "Timber-framed houses and a few sturdy shops line a main street."
-    ],
-    city: [
-      "Stone walls and watchtowers mark a sizable city. Traffic flows through its gates.",
-      "A dense city sprawls here, layered with markets, temples, and workshops."
-    ],
-    metropolis: [
-      "A vast metropolis dominates the landscape, throbbing with trade and intrigue.",
-      "Countless rooftops, towers, and plazas stretch as far as the eye can see."
-    ]
-  },
-  poi: {
-    cave: [
-      "A dark cave mouth gapes before you. Cool air whispers from within.",
-      "A limestone opening reveals descending tunnels and faint echoes."
-    ],
-    ruin: [
-      "Crumbling stonework and shattered columns hint at a lost civilization.",
-      "An overgrown ruin lies here, half-swallowed by roots and time."
-    ],
-    structure: [
-      "A lone structure stands in defiance of the surrounding wilds.",
-      "A watchful outbuilding sits here, its purpose unclear."
-    ]
-  },
-  geography: {
-    forest: [
-      "Thick forest crowds the area, branches interlaced overhead.",
-      "A stand of old trees forms a natural barrier and muffles sound."
-    ],
-    field: [
-      "Open fields roll gently, dotted with wildflowers and low grass.",
-      "A breezy plain stretches outward, easy to traverse and to spot danger from."
-    ],
-    default: [
-      "Uneventful terrain spreads out here.",
-      "A quiet patch of land without notable features."
-    ]
-  }
-};
-
 /**
  * Generate a short narrative description for an L1 cell.
  * Deterministic from provided seed or derived from coords.
  */
 function generateL1FeatureDescription(l1_cell_data) {
-  if (!l1_cell_data) return "Unremarkable ground.";
-  let { type, subtype, seed, mx, my, lx, ly } = l1_cell_data;
-  type = type || "geography";
-  subtype = subtype || "default";
-  if (typeof seed !== "number") {
-    if (typeof mx === "number" && typeof my === "number" && typeof lx === "number" && typeof ly === "number") {
-      const id = `M${mx}x${my}/L1_${lx}_${ly}_${type}_${subtype}`;
-      seed = hashSeedFromLocationID(id);
-    } else {
-      seed = hashSeedFromLocationID(type + ":" + subtype);
-    }
-  }
-  const rng = makeLCG(seed);
-  let pool;
-  if (L1_DESCRIPTION_TEMPLATES[type] && L1_DESCRIPTION_TEMPLATES[type][subtype]) {
-    pool = L1_DESCRIPTION_TEMPLATES[type][subtype];
-  } else if (L1_DESCRIPTION_TEMPLATES[type] && L1_DESCRIPTION_TEMPLATES[type].default) {
-    pool = L1_DESCRIPTION_TEMPLATES[type].default;
-  } else {
-    pool = ["Nothing remarkable is here."];
-  }
-  const idx = rng.nextInt(pool.length);
-  return pool[idx];
+  if (!l1_cell_data) return "unknown";
+  const type = l1_cell_data.type || "geography";
+  const subtype = l1_cell_data.subtype || "default";
+  return `${type}/${subtype}`;
 }
 
-/**
- * Generate a deterministic L2 settlement layout.
- */
 function generateL2Settlement(settlement_id, settlement_type, npc_array) {
   const st = SETTLEMENT_SIZES[settlement_type] || SETTLEMENT_SIZES["village"];
   const seed = hashSeedFromLocationID(settlement_id);
@@ -701,13 +665,37 @@ function flagCustomWorld(state) {
  * Engine auto-description won't overwrite authored content.
  */
 function generateWorldFromDescription(state, description) {
-  // No hard generation here to avoid architectural changes; rely on existing hydration
-  // and mark current content as custom.
-  flagCustomWorld(state);
-  return state;
+  const desc = String(description || '').toLowerCase();
+  
+  // Parse keywords to determine biome
+  let bestBiome = null;
+  let maxMatches = 0;
+  
+  for (const [biome, keywords] of Object.entries(BIOME_KEYWORDS)) {
+    const matches = keywords.filter(kw => desc.includes(kw)).length;
+    if (matches > maxMatches) {
+      maxMatches = matches;
+      bestBiome = biome;
+    }
+  }
+  
+  // Default to rural if no keywords match
+  if (!bestBiome || maxMatches === 0) {
+    bestBiome = "rural";
+  }
+  
+  // Store the chosen biome and original prompt
+  const next = { ...state };
+  next.world = next.world || {};
+  next.world.macro_biome = bestBiome;
+  next.world.world_prompt = String(description);
+  
+  // Generate seed from description for determinism
+  const seed = next.world.seed || h32(description);
+  next.world.seed = seed;
+  
+  return next;
 }
-
-
 function normalizeCellKeys(state) {
   const cells = state?.world?.cells;
   if (!cells || typeof cells !== 'object') return;
@@ -721,4 +709,4 @@ function normalizeCellKeys(state) {
   }
 }
 
-module.exports = { worldGenStep, exposeSitesInWindow, generateL1FeatureDescription, generateL2Settlement, generateL2POI, generateL3Building, hashSeedFromLocationID, makeLCG };
+module.exports = { generateWorldFromDescription,  worldGenStep, exposeSitesInWindow, generateL1FeatureDescription, generateL2Settlement, generateL2POI, generateL3Building, hashSeedFromLocationID, makeLCG };
