@@ -15,16 +15,7 @@ const DEFAULTS = {
 
 
 const TERRAIN_TYPES = {
-  geography: [
-    "plains_grassland", "plains_wildflower", "forest_deciduous", "forest_coniferous", 
-    "forest_mixed", "meadow", "hills_rolling", "hills_rocky", "desert_sand", 
-    "desert_dunes", "desert_rocky", "scrubland", "badlands", "canyon", "mesa",
-    "tundra", "snowfield", "ice_sheet", "permafrost", "alpine", "swamp", "marsh",
-    "wetland", "bog", "beach_sand", "beach_pebble", "cliffs_coastal", "tidepools",
-    "dunes_coastal", "mountain_slopes", "mountain_peak", "mountain_pass", 
-    "rocky_terrain", "scree", "river_crossing", "stream", "lake_shore", 
-    "waterfall", "spring"
-  ],
+  geography: ["plains_grassland", "plains_wildflower", "forest_deciduous", "forest_coniferous", "forest_mixed", "meadow", "hills_rolling", "hills_rocky", "desert_sand", "desert_dunes", "desert_rocky", "scrubland", "badlands", "canyon", "mesa", "tundra", "snowfield", "ice_sheet", "permafrost", "alpine", "swamp", "marsh", "wetland", "bog", "beach_sand", "beach_pebble", "cliffs_coastal", "tidepools", "dunes_coastal", "mountain_slopes", "mountain_peak", "mountain_pass", "rocky_terrain", "scree", "river_crossing", "stream", "lake_shore", "waterfall", "spring", "street", "plaza", "alley", "park_urban", "district_commercial", "district_residential", "building_complex", "market_square", "garden_urban"],
   settlement: [
     "campsite", "outpost", "hamlet", "village", "town", "city", "metropolis",
     "fort", "stronghold", "port", "harbor", "trading_post", "mining_camp",
@@ -61,7 +52,7 @@ const BIOME_KEYWORDS = {
 
 // Terrain palettes for each biome
 const BIOME_PALETTES = {
-  urban: ["plains_grassland", "meadow", "hills_rolling", "scrubland", "river_crossing", "stream"],
+  urban: ["street", "plaza", "alley", "park_urban", "district_commercial", "district_residential", "building_complex", "market_square", "garden_urban", "meadow"],
   rural: ["plains_grassland", "plains_wildflower", "meadow", "forest_deciduous", "hills_rolling", "river_crossing", "stream"],
   forest: ["forest_deciduous", "forest_mixed", "forest_coniferous", "meadow", "stream", "hills_rolling"],
   desert: ["desert_sand", "desert_dunes", "desert_rocky", "scrubland", "badlands", "canyon", "mesa"],
