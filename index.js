@@ -351,8 +351,8 @@ inventory_count: ${scene.inventory.length}
       engine_output: engineOutput,
       scene,
       error: err.message
-    , debug} );
-  }
+    , debug
+    });
     if (!process.env.DEEPSEEK_API_KEY) {
     return res.json({ 
       error: 'DEEPSEEK_API_KEY not set',
