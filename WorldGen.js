@@ -221,6 +221,7 @@ function planSitesForMacro(state, mx, my) {
 
 
 function pickTerrainType(seed, mx, my, lx, ly, state) {
+  console.log('[TERRAIN] Checking macro_biome:', state?.world?.macro_biome, 'palette exists:', !!BIOME_PALETTES[state?.world?.macro_biome]);
   // Check if world has a macro biome set
   let types = TERRAIN_TYPES.geography;
   
@@ -231,6 +232,7 @@ function pickTerrainType(seed, mx, my, lx, ly, state) {
     }
   }
   
+  console.log('[TERRAIN] Using palette:', types);
   // Deterministic pick from palette
   const cellSeed = h32(`${seed}|terrain|${mx}|${my}|${lx}|${ly}`);
   const rng = mulberry32(cellSeed);
@@ -242,7 +244,6 @@ function pickTerrainType(seed, mx, my, lx, ly, state) {
   };
 }
 function hydrateL1Window(state, deltas) {
-  const { R, P } = state.world.stream;
   const pos = state.world.position;
   const macro = ensureMacro(state, pos.mx, pos.my);
   const W = macro.l1.w, H = macro.l1.h;
@@ -342,6 +343,7 @@ function applyMovement(state, actions, deltas) {
 }
 
 // Public step: movement + hydrate + site reveal (identical to v118 order after actions)
+
 function worldGenStep(state, input){
   const deltas = [];
   // position sanity
@@ -694,6 +696,7 @@ function generateWorldFromDescription(state, description) {
   const seed = next.world.seed || h32(description);
   next.world.seed = seed;
   
+  console.log('[BIOME] Detected biome:', bestBiome, 'from prompt:', description);
   return next;
 }
 function normalizeCellKeys(state) {
