@@ -58,6 +58,7 @@ function resolveItemByName(state, query){
 }
 
 // Intent parsing (as in v118)
+/* LEGACY FALLBACK — deprecated; used only if SemanticParser fails */
 function parseIntent(text) {
   const t = String(text || '').trim().toLowerCase();
   if (/^(look|look around|observe|scan)$/.test(t)) return { action:'look' };
@@ -111,7 +112,142 @@ function computeInventoryDigestHex(state){
   return sha256Hex(rows);
 }
 
+// === Phase 3: Validation for pre-normalized intents (no state mutation) ===
+const DIR_ALIASES = { n:'north', s:'south', e:'east', w:'west', u:'up', d:'down' };
+const VALID_DIRS = new Set(['north','south','east','west','up','down']);
+
+function isValidDir(dir){
+  if (!dir) return { ok:false, canonical:null };
+  const d = String(dir).trim().toLowerCase();
+  const canon = DIR_ALIASES[d] || d;
+  return { ok: VALID_DIRS.has(canon), canonical: VALID_DIRS.has(canon) ? canon : null };
+}
+
+function getCellEntities(state){
+  const cell = (((state||{}).world||{}).current_cell)||{};
+  const items = Array.isArray(cell.items) ? cell.items : [];
+  // If your schema nests npcs per cell, prefer that. Otherwise fallback to world.npcs array.
+  const npcs = Array.isArray((((state||{}).world)||{}).npcs) ? state.world.npcs : (Array.isArray(cell.npcs)?cell.npcs:[]);
+  return { items, npcs };
+}
+
+function findByNameCaseInsensitive(list, prop, query){
+  const q = String(query||'').trim().toLowerCase();
+  for (const it of (list||[])){
+    const name = String(it?.[prop]||'').toLowerCase();
+    if (name === q) return it;
+  }
+  return null;
+}
+
+function resolveCellItemByName(state, query){
+  const { items } = getCellEntities(state);
+  // Prefer aliasScore if available (matching inventory resolver style)
+  let best = null;
+  let bestScore = -1e9;
+  for (const it of items){
+    const score = (typeof aliasScore === 'function')
+      ? aliasScore(query, it?.name||'', it?.aliases||[], 2)
+      : (String(it?.name||'').toLowerCase() === String(query||'').trim().toLowerCase() ? 10 : 0);
+    if (score > bestScore){ bestScore = score; best = it; }
+  }
+  return bestScore >= 6 ? best : null; // threshold similar to inventory resolver
+}
+
+function hasInventoryItem(state, name){
+  const inv = (((state||{}).player||{}).inventory)||[];
+  return !!findByNameCaseInsensitive(inv, 'name', name);
+}
+
+function isNPCPresent(state, name){
+  const { npcs } = getCellEntities(state);
+  return !!findByNameCaseInsensitive(npcs, 'name', name);
+}
+
+/**
+ * validateAndQueueIntent(gameState, normalizedIntent)
+ * Returns: { valid, queue, reason?, stateValidation? }
+ */
+function validateAndQueueIntent(state, normalizedIntent){
+  const sv = { hasPlayer: !!((state||{}).player), notes: [] };
+
+  if (!normalizedIntent || typeof normalizedIntent !== 'object'){
+    return { valid:false, queue:[], reason:"NO_INTENT", stateValidation:sv };
+  }
+  const primary = normalizedIntent.primaryAction || null;
+  if (!primary || typeof primary.action !== 'string' || !primary.action.trim()){
+    return { valid:false, queue:[], reason:"NO_PRIMARY_ACTION", stateValidation:sv };
+  }
+  const secondaries = Array.isArray(normalizedIntent.secondaryActions) ? normalizedIntent.secondaryActions : [];
+  const queue = normalizedIntent.compound ? [primary, ...secondaries] : [primary];
+
+  // Validate each queued action without mutating state
+  for (const act of queue){
+    const action = String(act?.action||'').toLowerCase();
+    if (!action){ return { valid:false, queue:[], reason:"EMPTY_ACTION", stateValidation:sv }; }
+
+    if (action === 'move'){
+      const { ok, canonical } = isValidDir(act?.dir);
+      sv.validDir = ok;
+      if (!ok) return { valid:false, queue:[], reason:"INVALID_DIRECTION", stateValidation:sv };
+      act.dir = canonical; // canonicalize
+      continue;
+    }
+
+    if (action === 'take'){
+      const target = act?.target||'';
+      const found = resolveCellItemByName(state, target);
+      sv.targetInCell = !!found;
+      if (!found) return { valid:false, queue:[], reason:"TARGET_NOT_FOUND_IN_CELL", stateValidation:sv };
+      continue;
+    }
+
+    if (action === 'drop'){
+      const target = act?.target||'';
+      const inInv = hasInventoryItem(state, target);
+      sv.targetInInventory = inInv;
+      if (!inInv) return { valid:false, queue:[], reason:"TARGET_NOT_IN_INVENTORY", stateValidation:sv };
+      continue;
+    }
+
+    if (action === 'examine'){
+      const t = act?.target||'';
+      const inCell = !!resolveCellItemByName(state, t);
+      const inInv = hasInventoryItem(state, t);
+      const npc   = isNPCPresent(state, t);
+      sv.visible = !!(inCell || inInv || npc);
+      if (!sv.visible) return { valid:false, queue:[], reason:"TARGET_NOT_VISIBLE", stateValidation:sv };
+      continue;
+    }
+
+    if (action === 'talk'){
+      const t = act?.target||'';
+      const present = isNPCPresent(state, t);
+      sv.targetIsNPC = present;
+      if (!present) return { valid:false, queue:[], reason:"NPC_NOT_PRESENT", stateValidation:sv };
+      continue;
+    }
+
+    // Lightweight checks / always-allow group
+    if (['sit','stand','wait','listen','look','inventory','help'].includes(action)){
+      continue;
+    }
+
+    // Actions that may need deeper model checks; allow if not modeled here
+    if (['cast','attack','sneak'].includes(action)){
+      sv.notes.push(`allowed_${action}_shallow`);
+      continue;
+    }
+
+    // Unknown action: pass through but mark as shallow-validated
+    sv.notes.push(`unknown_action:${action}`);
+  }
+
+  console.log('[ACTIONS] valid queue=%d primary=%s', queue.length, queue[0]?.action);
+  return { valid:true, queue, stateValidation:sv };
+}
+
 module.exports = {
-  DEFAULTS, parseIntent,
-  applyPlayerActions, computeInventoryDigestHex
+  validateAndQueueIntent,
+  parseIntent
 };

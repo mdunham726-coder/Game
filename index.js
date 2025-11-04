@@ -2,12 +2,17 @@ const path = require('path');
 const express = require('express');
 const axios = require('axios');
 const Engine = require('./Engine.js');
+// Legacy import retained for compatibility
 const Actions = require('./ActionProcessor.js');
 
+const { validateAndQueueIntent, parseIntent } = require('./ActionProcessor_v3.js');
+const { normalizeUserIntent } = require('./SemanticParser.js');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
+
+function getActionKind(a) { return (a && a.action === 'move') ? 'MOVE' : 'FREEFORM'; }
 
 function mapActionToInput(action, kind = "FREEFORM") {
   const result = {
@@ -84,9 +89,36 @@ app.post('/narrate', async (req, res) => {
     gameState = init.state;
     return res.json({
       narrative: "Describe your world in 3 sentences.",
+      debug,
       state: gameState,
       restart: true
     });
+  // --- Semantic Parser integration (Phase 2) ---
+  const userInput = String(action);
+  const gameContext = {
+    player: gameState?.player ? {
+      position: gameState.player,
+      inventory: Array.isArray(gameState.player.inventory) ? gameState.player.inventory.map(i => i.name) : []
+    } : null,
+    current_cell: gameState?.world?.current_cell || null,
+    adjacent_cells: gameState?.world?.adjacent_cells || null,
+    npcs_present: Array.isArray(gameState?.world?.npcs) ? gameState.world.npcs.map(n => n.name) : []
+  };
+  let parseResult = null;
+  try {
+    parseResult = await normalizeUserIntent(userInput, gameContext);
+  } catch (e) {
+    parseResult = { success: false, error: 'LLM_UNAVAILABLE', intent: null };
+    console.warn('[PARSER] exception in semantic parser:', e?.message);
+  }
+  let debug = {
+    parser: "none",
+    input: userInput,
+    intent: (parseResult && parseResult.intent) ? parseResult.intent : null,
+    confidence: (parseResult && typeof parseResult.confidence === 'number') ? parseResult.confidence : 0,
+    clarification: null
+  };
+
   }
 
   // Before-turn debug info
@@ -108,23 +140,75 @@ app.post('/narrate', async (req, res) => {
       return res.json({ 
         error: `engine_failed: ${err.message}`, 
         narrative: "The engine encountered an error initializing the world.",
-        state: gameState 
+        state: gameState,
+        debug 
       });
     }
   }
 else {
 
   // Ongoing turn: infer MOVE vs FREEFORM and call Engine
+  
+  // Semantic parse branching with legacy fallback
   try {
     if (!Engine.buildOutput) {
       throw new Error('Engine.buildOutput is not a function');
     }
-    const parsed = Actions.parseIntent(action);
-    const inferredKind = (parsed && parsed.action === "move") ? "MOVE" : "FREEFORM";
-    const inputObj = mapActionToInput(action, inferredKind);
-    if (parsed && parsed.action === "move" && parsed.dir) {
-      inputObj.player_intent.dir = parsed.dir;
+
+    // Clarify if low confidence (only for non-first-turn)
+    if (parseResult && parseResult.success === true && typeof parseResult.confidence === 'number' && parseResult.confidence < 0.5) {
+      console.log('[PARSER] semantic_clarify input="%s" confidence=%s', userInput, parseResult.confidence);
+      debug.parser = "semantic_clarify";
+      debug.clarification = "awaiting_confirmation";
+      return res.json({
+        narrative: `[CLARIFICATION] I didn't quite understand that. Did you mean to: ${parseResult.intent?.primaryAction?.action || '...'}? (yes/no/try again)`,
+        state: gameState,
+        debug
+      });
     }
+
+    let inputObj = null;
+
+    if (parseResult && parseResult.success === true && typeof parseResult.confidence === 'number' && parseResult.confidence >= 0.5) {
+      console.log('[PARSER] semantic_ok input="%s" action="%s" confidence=%s', userInput, parseResult.intent?.primaryAction?.action, parseResult.confidence);
+      debug.parser = "semantic";
+      // Phase 4: validate queue and execute sequentially
+      const validation = validateAndQueueIntent(gameState, parseResult.intent);
+      if (!validation.valid) {
+        return res.json({
+          success: true,
+          narrative: `Action invalid: ${validation.reason}`,
+          state: gameState,
+          debug: { ...debug, parser: "semantic", error: "INVALID_ACTION", reason: validation.reason, validation: validation.stateValidation }
+        });
+      }
+      const allResponses = [];
+      for (const queuedAction of validation.queue) {
+        const raw = [queuedAction.action, queuedAction.target].filter(Boolean).join(' ');
+        const mapped = mapActionToInput(raw, getActionKind(queuedAction));
+        if (queuedAction.action === 'move' && queuedAction.dir) {
+          const dirMap = { north:'n', south:'s', east:'e', west:'w', up:'u', down:'d' };
+          const d = String(queuedAction.dir).toLowerCase();
+          mapped.player_intent.dir = dirMap[d] || d;
+        }
+        const result = await Engine.buildOutput(gameState, mapped);
+        allResponses.push(result);
+        if (result && result.state) gameState = result.state;
+      }
+      engineOutput = allResponses[allResponses.length - 1];
+      debug = { ...debug, parser: "semantic", queue_length: validation.queue.length };
+    } else {
+      // Fallback to legacy parser
+      console.log('[PARSER] fallback_legacy input="%s"', userInput);
+      debug.parser = "legacy";
+      const parsed = Actions.parseIntent(action);
+      const inferredKind = (parsed && parsed.action === "move") ? "MOVE" : "FREEFORM";
+      inputObj = mapActionToInput(action, inferredKind);
+      if (parsed && parsed.action === "move" && parsed.dir) {
+        inputObj.player_intent.dir = parsed.dir;
+      }
+    }
+
     engineOutput = Engine.buildOutput(gameState, inputObj);
     if (engineOutput && engineOutput.state) {
       gameState = engineOutput.state;
@@ -134,12 +218,11 @@ else {
     return res.json({ 
       error: `engine_failed: ${err.message}`, 
       narrative: "The engine encountered an error processing your action.",
-      state: gameState 
+      state: gameState,
+      debug
     });
-  }
-
 }
-  // --- Scene: current cell + nearby cells (N,S,E,W) ---
+// --- Scene: current cell + nearby cells (N,S,E,W) ---
   const pos = gameState?.world?.position || {};
   const l1w = (gameState?.world?.l1_default?.w) || 12;
   const l1h = (gameState?.world?.l1_default?.h) || 12;
@@ -195,6 +278,82 @@ if (!cellsMap[curKey]) {
   // After-turn debug info
   const afterCells = Object.keys(gameState?.world?.cells || {}).length;
   console.log('[turn] cells_after=', afterCells);
+
+  if (!process.env.DEEPSEEK_API_KEY) {
+    return res.json({ 
+      error: 'DEEPSEEK_API_KEY not set',
+      narrative: "The engine processes your action.",
+      state: gameState,
+      engine_output: engineOutput,
+      scene
+    , debug} );
+  }
+  console.log('[narrate] scene:', JSON.stringify(scene, null, 2));
+
+  try {
+    const response = await axios.post('https://api.deepseek.com/v1/chat/completions', {
+      model: 'deepseek-chat',
+      messages: [{
+        role: 'user',
+        content: `You are narrating an interactive roguelike game driven by a procedural engine.
+- Translate engine output (terrain types, cell descriptions, entity lists) into vivid, coherent prose
+- Maintain environmental consistency: terrain types define what the player can see and interact with
+- Build narrative tension through descriptions of current terrain and environmental features
+- React to player action by describing immediate sensory consequences within the game world
+
+CURRENT LOCATION:
+${scene.currentCell.description}
+(Terrain: ${scene.currentCell.type}/${scene.currentCell.subtype})
+
+ADJACENT AREAS:
+North: ${scene.nearbyCells.find(c => c.dir === 'North')?.description || 'Unknown'}
+South: ${scene.nearbyCells.find(c => c.dir === 'South')?.description || 'Unknown'}
+East: ${scene.nearbyCells.find(c => c.dir === 'East')?.description || 'Unknown'}
+West: ${scene.nearbyCells.find(c => c.dir === 'West')?.description || 'Unknown'}
+
+INVENTORY: ${JSON.stringify(scene.inventory)}
+NPCs PRESENT: ${scene.npcs && scene.npcs.length > 0 ? JSON.stringify(scene.npcs) : 'None'}
+
+Player action: "${action}"
+
+CONSTRAINTS:
+- If the player input is in parentheses (OOC), break character immediately and answer their technical question directly
+- Narrate ONLY what the player can see based on current location and adjacent areas
+- Do NOT invent dungeons, doors, or architecture not mentioned above
+- Do NOT reference locations you weren't provided
+- Write a full paragraph of immersive description
+
+DEBUG_FOOTER:
+At the end of your narration, append this metadata block:
+---DEBUG---
+current_cell: ${scene.currentCell.type}/${scene.currentCell.subtype}
+cell_description: ${scene.currentCell.description.substring(0, 50)}...
+adjacent_cells: [${scene.nearbyCells.map(c => c.dir + ':' + c.type).join(', ')}]
+npcs_count: ${scene.npcs.length}
+inventory_count: ${scene.inventory.length}
+---END_DEBUG---`
+      }],
+      temperature: 0.7
+    }, {
+      headers: {
+        'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const narrative = response.data.choices[0].message.content;
+    return res.json({ narrative, state: gameState, engine_output: engineOutput, scene , debug} );
+  } catch (err) {
+    console.error('DeepSeek error:', err.message);
+    return res.json({ 
+      narrative: "The engine processes your action.",
+      state: gameState,
+      engine_output: engineOutput,
+      scene,
+      error: err.message
+    , debug} );
+  }
+}s_after=', afterCells);
 
   if (!process.env.DEEPSEEK_API_KEY) {
     return res.json({ 
@@ -259,7 +418,7 @@ inventory_count: ${scene.inventory.length}
     });
 
     const narrative = response.data.choices[0].message.content;
-    return res.json({ narrative, state: gameState, engine_output: engineOutput, scene });
+    return res.json({ narrative, state: gameState, engine_output: engineOutput, scene, debug });
   } catch (err) {
     console.error('DeepSeek error:', err.message);
     return res.json({ 
@@ -267,7 +426,8 @@ inventory_count: ${scene.inventory.length}
       state: gameState,
       engine_output: engineOutput,
       scene,
-      error: err.message
+      error: err.message,
+      debug
     });
   }
 });
