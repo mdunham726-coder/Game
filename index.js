@@ -353,8 +353,9 @@ inventory_count: ${scene.inventory.length}
       error: err.message,
       debug
     });
-  }
-});
+  }                  // Closes catch block
+  }                  // Closes else block (started at line ~148)
+});                  // Closes app.post('/narrate', async (req, res) => {
 
 app.get('/status', (req, res) => {
   return res.json({
@@ -368,4 +369,5 @@ app.get('/status', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}
 `);
+});
 });
