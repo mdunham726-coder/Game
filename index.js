@@ -2,7 +2,6 @@ const path = require('path');
 const express = require('express');
 const axios = require('axios');
 const Engine = require('./Engine.js');
-const WorldGen = require('./WorldGen.js');
 const Actions = require('./ActionProcessor.js');
 
 const app = express();
@@ -11,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 
 function mapActionToInput(action, kind = "FREEFORM") {
-  return {
+  const result = {
     player_intent: {
       kind: kind,
       raw: String(action)
@@ -21,9 +20,18 @@ function mapActionToInput(action, kind = "FREEFORM") {
       ts: new Date().toISOString()
     }
   };
+  
+  // Add top-level WORLD_PROMPT for Engine compatibility
+  if (kind === "WORLD_PROMPT") {
+    result.WORLD_PROMPT = String(action);
+  }
+  
+  return result;
 }
 
 let gameState = null;
+let isFirstTurn = true;
+
 function initializeGame() {
   let state = null;
   if (Engine && typeof Engine.initState === 'function') {
@@ -87,11 +95,9 @@ app.post('/narrate', async (req, res) => {
 
   // First turn: seed world using WORLD_PROMPT through Engine
   let engineOutput = null;
-  let inputObj = null;
-
-  // Auto-detect first turn: if no cells exist, this is world creation
-  const isFirstTurn = !gameState?.world?.cells || Object.keys(gameState.world.cells).length === 0;
-  if (isFirstTurn) {inputObj = mapActionToInput(action, "WORLD_PROMPT");
+  if (isFirstTurn === true) {
+    isFirstTurn = false;
+    const inputObj = mapActionToInput(action, "WORLD_PROMPT");
     try {
       engineOutput = Engine.buildOutput(gameState, inputObj);
       if (engineOutput && engineOutput.state) {
@@ -106,6 +112,7 @@ app.post('/narrate', async (req, res) => {
       });
     }
   }
+else {
 
   // Ongoing turn: infer MOVE vs FREEFORM and call Engine
   try {
@@ -114,7 +121,7 @@ app.post('/narrate', async (req, res) => {
     }
     const parsed = Actions.parseIntent(action);
     const inferredKind = (parsed && parsed.action === "move") ? "MOVE" : "FREEFORM";
-    inputObj = mapActionToInput(action, inferredKind);
+    const inputObj = mapActionToInput(action, inferredKind);
     if (parsed && parsed.action === "move" && parsed.dir) {
       inputObj.player_intent.dir = parsed.dir;
     }
@@ -131,6 +138,7 @@ app.post('/narrate', async (req, res) => {
     });
   }
 
+}
   // --- Scene: current cell + nearby cells (N,S,E,W) ---
   const pos = gameState?.world?.position || {};
   const l1w = (gameState?.world?.l1_default?.w) || 12;
@@ -251,20 +259,7 @@ inventory_count: ${scene.inventory.length}
     });
 
     const narrative = response.data.choices[0].message.content;
-    return res.json({ 
-  narrative, 
-  state: gameState, 
-  engine_output: engineOutput, 
-  scene,
-  diagnostics: {
-    cells_generated: afterCells - beforeCells,
-    macro_biome: gameState?.world?.macro_biome,
-    has_world_prompt: !!(inputObj?.WORLD_PROMPT),
-    world_prompt_value: inputObj?.WORLD_PROMPT,
-    first_turn: isFirstTurn,
-    sample_cell_types: Object.values(gameState?.world?.cells || {}).slice(0, 5).map(c => c.subtype)
-  }
-});
+    return res.json({ narrative, state: gameState, engine_output: engineOutput, scene });
   } catch (err) {
     console.error('DeepSeek error:', err.message);
     return res.json({ 
@@ -278,17 +273,15 @@ inventory_count: ${scene.inventory.length}
 });
 
 app.get('/status', (req, res) => {
-  // Auto-detect first turn here (since global is removed)
-  const currentlyFirstTurn = !gameState?.world?.cells || Object.keys(gameState.world.cells).length === 0;
   return res.json({
     status: 'running',
     hasGameState: gameState !== null,
-    isFirstTurn: currentlyFirstTurn,
-    cellCount: Object.keys(gameState?.world?.cells || {}).length,
+    isFirstTurn: isFirstTurn,
     playerLocation: gameState?.player?.mx || null
   });
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}
+`);
 });
