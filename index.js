@@ -100,7 +100,7 @@ app.post('/narrate', async (req, res) => {
       narrative: "Describe your world in 3 sentences.",
       state: gameState,
       restart: true
-      debug
+      debug: debug
     });
   }
   // --- Semantic Parser integration (Phase 2) ---
