@@ -24,8 +24,6 @@ function mapActionToInput(action, kind = "FREEFORM") {
 }
 
 let gameState = null;
-let isFirstTurn = true;
-
 function initializeGame() {
   let state = null;
   if (Engine && typeof Engine.initState === 'function') {
@@ -89,10 +87,11 @@ app.post('/narrate', async (req, res) => {
 
   // First turn: seed world using WORLD_PROMPT through Engine
   let engineOutput = null;
-  let inputObj = null;  // function-scope for diagnostics
-  if (isFirstTurn === true) {
-    isFirstTurn = false;
-    inputObj = mapActionToInput(action, "WORLD_PROMPT");
+  let inputObj = null;
+
+  // Auto-detect first turn: if no cells exist, this is world creation
+  const isFirstTurn = !gameState?.world?.cells || Object.keys(gameState.world.cells).length === 0;
+  if (isFirstTurn) {inputObj = mapActionToInput(action, "WORLD_PROMPT");
     try {
       engineOutput = Engine.buildOutput(gameState, inputObj);
       if (engineOutput && engineOutput.state) {
@@ -252,7 +251,20 @@ inventory_count: ${scene.inventory.length}
     });
 
     const narrative = response.data.choices[0].message.content;
-    return res.json({ narrative, state: gameState, engine_output: engineOutput, scene });
+    return res.json({ 
+  narrative, 
+  state: gameState, 
+  engine_output: engineOutput, 
+  scene,
+  diagnostics: {
+    cells_generated: afterCells - beforeCells,
+    macro_biome: gameState?.world?.macro_biome,
+    has_world_prompt: !!(inputObj?.WORLD_PROMPT),
+    world_prompt_value: inputObj?.WORLD_PROMPT,
+    first_turn: isFirstTurn,
+    sample_cell_types: Object.values(gameState?.world?.cells || {}).slice(0, 5).map(c => c.subtype)
+  }
+});
   } catch (err) {
     console.error('DeepSeek error:', err.message);
     return res.json({ 
@@ -266,15 +278,17 @@ inventory_count: ${scene.inventory.length}
 });
 
 app.get('/status', (req, res) => {
+  // Auto-detect first turn here (since global is removed)
+  const currentlyFirstTurn = !gameState?.world?.cells || Object.keys(gameState.world.cells).length === 0;
   return res.json({
     status: 'running',
     hasGameState: gameState !== null,
-    isFirstTurn: isFirstTurn,
+    isFirstTurn: currentlyFirstTurn,
+    cellCount: Object.keys(gameState?.world?.cells || {}).length,
     playerLocation: gameState?.player?.mx || null
   });
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}
-`);
+  console.log(`Server running on port ${PORT}`);
 });
