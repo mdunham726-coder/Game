@@ -99,7 +99,7 @@ app.post('/narrate', async (req, res) => {
     return res.json({
       narrative: "Describe your world in 3 sentences.",
       state: gameState,
-      restart: true
+      restart: true,
       debug: debug
     });
   }
