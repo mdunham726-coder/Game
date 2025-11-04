@@ -5,7 +5,7 @@ const Engine = require('./Engine.js');
 // Legacy import retained for compatibility
 const Actions = require('./ActionProcessor.js');
 
-const { validateAndQueueIntent, parseIntent } = require('./ActionProcessor_v3.js');
+const { validateAndQueueIntent, parseIntent } = require('./ActionProcessor.js');
 const { normalizeUserIntent } = require('./SemanticParser.js');
 const app = express();
 const PORT = process.env.PORT || 3000;
