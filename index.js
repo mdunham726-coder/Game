@@ -328,7 +328,7 @@ inventory_count: ${scene.inventory.length}
       error: err.message
     , debug} );
   }
-
+});
 app.get('/status', (req, res) => {
   return res.json({
     status: 'running',
