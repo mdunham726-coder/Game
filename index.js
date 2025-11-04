@@ -251,7 +251,20 @@ inventory_count: ${scene.inventory.length}
     });
 
     const narrative = response.data.choices[0].message.content;
-    return res.json({ narrative, state: gameState, engine_output: engineOutput, scene });
+    return res.json({ 
+  narrative, 
+  state: gameState, 
+  engine_output: engineOutput, 
+  scene,
+  diagnostics: {
+    cells_generated: afterCells - beforeCells,
+    macro_biome: gameState?.world?.macro_biome,
+    has_world_prompt: !!(inputObj?.WORLD_PROMPT),
+    world_prompt_value: inputObj?.WORLD_PROMPT,
+    first_turn: isFirstTurn,
+    sample_cell_types: Object.values(gameState?.world?.cells || {}).slice(0, 5).map(c => c.subtype)
+  }
+});
   } catch (err) {
     console.error('DeepSeek error:', err.message);
     return res.json({ 
