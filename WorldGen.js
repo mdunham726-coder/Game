@@ -13,6 +13,41 @@ const DEFAULTS = {
   CAPS_PER_MACRO: { metropolis: 0, city: 1 }
 };
 
+
+const TERRAIN_TYPES = {
+  geography: [
+    "plains_grassland", "plains_wildflower", "forest_deciduous", "forest_coniferous", 
+    "forest_mixed", "meadow", "hills_rolling", "hills_rocky", "desert_sand", 
+    "desert_dunes", "desert_rocky", "scrubland", "badlands", "canyon", "mesa",
+    "tundra", "snowfield", "ice_sheet", "permafrost", "alpine", "swamp", "marsh",
+    "wetland", "bog", "beach_sand", "beach_pebble", "cliffs_coastal", "tidepools",
+    "dunes_coastal", "mountain_slopes", "mountain_peak", "mountain_pass", 
+    "rocky_terrain", "scree", "river_crossing", "stream", "lake_shore", 
+    "waterfall", "spring"
+  ],
+  settlement: [
+    "campsite", "outpost", "hamlet", "village", "town", "city", "metropolis",
+    "fort", "stronghold", "port", "harbor", "trading_post", "mining_camp",
+    "logging_camp", "monastery", "temple_complex", "ruins_settlement"
+  ],
+  poi: [
+    "cave_natural", "cavern_crystal", "grotto", "sinkhole", "hot_spring",
+    "geyser_field", "ancient_tree", "fairy_ring", "tar_pit", "quicksand",
+    "mesa_flat", "rock_formation", "natural_arch", "ruins_temple", "ruins_tower",
+    "ruins_castle", "burial_mound", "crypt", "tomb", "standing_stones",
+    "stone_circle", "obelisk", "abandoned_mine", "abandoned_mill", "abandoned_bridge",
+    "battlefield_old", "shipwreck", "monster_lair", "dragon_cave", "giant_nest",
+    "bandit_camp", "cultist_shrine", "witch_hut", "necromancer_tower", "haunted_grove",
+    "cursed_ground", "execution_site", "quarry_active", "quarry_abandoned",
+    "mine_entrance", "ore_vein", "herb_garden_wild", "berry_grove", "mushroom_circle",
+    "fishing_spot", "salt_flat", "clay_pit", "meteor_crater", "portal_remnant",
+    "ley_line_nexus", "time_distortion", "crystallized_magic", "petrified_forest",
+    "floating_rocks", "gravity_anomaly"
+  ]
+};
+
+
+
 // --- RNG / Helpers (identical behavior) ---
 function h32(key) {
   const hex = crypto.createHash('sha256').update(key, 'utf8').digest('hex');
@@ -157,6 +192,16 @@ function planSitesForMacro(state, mx, my) {
   return JSON.parse(JSON.stringify(plan));
 }
 
+
+function pickTerrainType(seed, mx, my, lx, ly) {
+  const types = TERRAIN_TYPES.geography;
+  const cellSeed = h32(`${seed}|terrain|${mx}|${my}|${lx}|${ly}`);
+  const rng = mulberry32(cellSeed);
+  const idx = Math.floor(rng() * types.length);
+  return { type: "geography", subtype: types[idx] };
+}
+
+
 function hydrateL1Window(state, deltas) {
   const { R, P } = state.world.stream;
   const pos = state.world.position;
@@ -168,7 +213,9 @@ function hydrateL1Window(state, deltas) {
     const id = byKey(pos.mx,pos.my,lx,ly);
     let c = state.world.cells[id];
     if (!c) {
-      c = state.world.cells[id] = { id, mx:pos.mx, my:pos.my, lx, ly, known: true, hydrated: !!hydrated, tags: {} };
+      const terrain = pickTerrainType(state.rng_seed || 0, pos.mx, pos.my, lx, ly);
+const desc = generateL1FeatureDescription({ type: terrain.type, subtype: terrain.subtype, mx: pos.mx, my: pos.my, lx, ly });
+c = state.world.cells[id] = { id, mx: pos.mx, my: pos.my, lx, ly, type: terrain.type, subtype: terrain.subtype, description: desc, known: true, hydrated: !!hydrated, tags: {} };
       if (!changed.has(id)) {
         deltas.push({ op:"add", path:`/world/cells/${id}`, value: c });
         changed.add(id);
