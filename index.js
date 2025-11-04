@@ -89,9 +89,10 @@ app.post('/narrate', async (req, res) => {
 
   // First turn: seed world using WORLD_PROMPT through Engine
   let engineOutput = null;
+  let inputObj = null;  // function-scope for diagnostics
   if (isFirstTurn === true) {
     isFirstTurn = false;
-    const inputObj = mapActionToInput(action, "WORLD_PROMPT");
+    inputObj = mapActionToInput(action, "WORLD_PROMPT");
     try {
       engineOutput = Engine.buildOutput(gameState, inputObj);
       if (engineOutput && engineOutput.state) {
@@ -114,7 +115,7 @@ app.post('/narrate', async (req, res) => {
     }
     const parsed = Actions.parseIntent(action);
     const inferredKind = (parsed && parsed.action === "move") ? "MOVE" : "FREEFORM";
-    const inputObj = mapActionToInput(action, inferredKind);
+    inputObj = mapActionToInput(action, inferredKind);
     if (parsed && parsed.action === "move" && parsed.dir) {
       inputObj.player_intent.dir = parsed.dir;
     }
@@ -251,20 +252,7 @@ inventory_count: ${scene.inventory.length}
     });
 
     const narrative = response.data.choices[0].message.content;
-    return res.json({ 
-  narrative, 
-  state: gameState, 
-  engine_output: engineOutput, 
-  scene,
-  diagnostics: {
-    cells_generated: afterCells - beforeCells,
-    macro_biome: gameState?.world?.macro_biome,
-    has_world_prompt: !!(inputObj?.WORLD_PROMPT),
-    world_prompt_value: inputObj?.WORLD_PROMPT,
-    first_turn: isFirstTurn,
-    sample_cell_types: Object.values(gameState?.world?.cells || {}).slice(0, 5).map(c => c.subtype)
-  }
-});
+    return res.json({ narrative, state: gameState, engine_output: engineOutput, scene });
   } catch (err) {
     console.error('DeepSeek error:', err.message);
     return res.json({ 
