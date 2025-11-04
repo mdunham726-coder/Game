@@ -106,7 +106,7 @@ function initState(timestampUTC) {
 function buildOutput(prevState, inputObj) {
   const nowUTC = toISO8601(inputObj && inputObj["timestamp_utc"]);
   const turnId = genTurnId(inputObj && inputObj["turn_id"]);
-  const state = prevState ? deepClone(prevState) : initState(nowUTC);
+  let state = prevState ? deepClone(prevState) : initState(nowUTC);
 
   const changes1 = [];
   const changes2 = [];
