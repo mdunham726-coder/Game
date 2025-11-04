@@ -125,10 +125,10 @@ function buildOutput(prevState, inputObj) {
 
   // WorldGen step (movement + streaming + site reveal)
   // Biome initialization if missing
+  console.log('[ENGINE] Biome check - has biome?', !!state?.world?.macro_biome, 'has WORLD_PROMPT?', !!inputObj?.WORLD_PROMPT, 'prompt value:', inputObj?.WORLD_PROMPT);
   if (!state?.world?.macro_biome && inputObj?.WORLD_PROMPT) {
     state = WorldGen.generateWorldFromDescription(state, inputObj.WORLD_PROMPT);
   }
-
   const wg = WorldGen.worldGenStep(state, { actions });
   // deltas are already pushed by worldGenStep to changes1-equivalent; merge:
   if (wg && Array.isArray(wg.deltas)) {
