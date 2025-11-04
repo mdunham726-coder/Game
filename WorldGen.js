@@ -244,6 +244,7 @@ function pickTerrainType(seed, mx, my, lx, ly, state) {
   };
 }
 function hydrateL1Window(state, deltas) {
+  const { R, P } = state.world.stream;
   const pos = state.world.position;
   const macro = ensureMacro(state, pos.mx, pos.my);
   const W = macro.l1.w, H = macro.l1.h;
