@@ -332,7 +332,6 @@ class DeepSeekIntegration {
    * Call DeepSeek API with prompt
    */
   async _callDeepSeekAPI(prompt) {
-    const axios = require('axios');
     
     const response = await axios.post('https://api.deepseek.com/v1/chat/completions', {
       model: 'deepseek-chat',
