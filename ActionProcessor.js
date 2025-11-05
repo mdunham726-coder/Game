@@ -76,13 +76,22 @@ function parseIntent(text) {
   // movement parsing moved to WorldGen.parseAndApplyMovement
 }
 
+// Merchant regeneration stub - prevents crashes, no state modification
+function merchantRegenOnTurn(state, turnCount) {
+  console.log(`[MERCHANT-REGEN] Stub called - turn ${turnCount}, merchants: ${state?.world?.npcs?.filter(n => n.type === 'merchant')?.length || 0}`);
+  // TODO: Implement actual merchant inventory regeneration logic
+  return state; // Return state unchanged for now
+}
+
 // Expiry tick + regen + player actions (take/drop/look)
 // (movement handled by WorldGen; we still parse it so Engine can route)
-
-
 function applyPlayerActions(state, actions, deltas, flags){
   const act = actions?.action;
-  if (act === 'take'){ return; }
+  if (act === 'take'){ 
+    // TODO: Implement take action logic
+    console.log('[ACTIONS] Take action stub - needs implementation');
+    return; 
+  }
   if (act === 'drop'){
     const target = actions?.target||'';
     const res = resolveItemByName(state, target);
@@ -163,7 +172,6 @@ function isNPCPresent(state, name){
   const { npcs } = getCellEntities(state);
   return !!findByNameCaseInsensitive(npcs, 'name', name);
 }
-
 /**
  * validateAndQueueIntent(gameState, normalizedIntent)
  * Returns: { valid, queue, reason?, stateValidation? }
@@ -258,5 +266,12 @@ module.exports = {
   findByNameCaseInsensitive,
   resolveCellItemByName,
   hasInventoryItem,
-  isNPCPresent
+  isNPCPresent,
+  // New exports to prevent crashes and improve utility access
+  merchantRegenOnTurn,
+  aliasScore,
+  levenshtein,
+  parseISO,
+  toISO,
+  sha256Hex
 };
