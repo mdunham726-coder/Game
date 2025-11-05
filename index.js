@@ -31,6 +31,67 @@ function getSessionState(sessionId) {
   }
   return { sessionId, ...sessionStates.get(sessionId) };
 }
+
+// File system helper functions for save/load system
+const fs = require('fs').promises;
+
+function getSavePath(sessionId) {
+  return path.join(__dirname, 'saves', sessionId);
+}
+
+function getSaveFilePath(sessionId, saveName) {
+  const cleanName = saveName.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+  return path.join(getSavePath(sessionId), `${cleanName}.json`);
+}
+
+async function ensureSaveDir(sessionId) {
+  const savePath = getSavePath(sessionId);
+  await fs.mkdir(savePath, { recursive: true });
+}
+
+async function getSaveCount(sessionId) {
+  try {
+    const savePath = getSavePath(sessionId);
+    const files = await fs.readdir(savePath);
+    return files.filter(file => file.endsWith('.json')).length;
+  } catch (error) {
+    return 0; // Directory doesn't exist yet
+  }
+}
+
+async function findUniqueSaveName(sessionId, baseName) {
+  const cleanBase = baseName.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+  let counter = 1;
+  let candidateName = cleanBase;
+  
+  while (true) {
+    const filePath = getSaveFilePath(sessionId, candidateName);
+    try {
+      await fs.access(filePath);
+      // File exists, try next number
+      candidateName = `${cleanBase} (${counter})`;
+      counter++;
+    } catch (error) {
+      // File doesn't exist, we found our unique name
+      return candidateName;
+    }
+    
+    // Safety limit to prevent infinite loops
+    if (counter > 100) {
+      throw new Error('Could not find unique save name');
+    }
+  }
+}
+
+async function saveExists(sessionId, saveName) {
+  try {
+    const filePath = getSaveFilePath(sessionId, saveName);
+    await fs.access(filePath);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
 function getActionKind(a) { return (a && a.action === 'move') ? 'MOVE' : 'FREEFORM'; }
 
 function mapActionToInput(action, kind = "FREEFORM") {
@@ -105,6 +166,275 @@ app.post('/reset', (req, res) => {
   };
   return res.json(result);
 });
+// ENDPOINT 1: POST /api/save
+app.post('/api/save', async (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  const { saveName, gameState } = req.body;
+  
+  if (!sessionId) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'MISSING_SESSION_ID',
+      message: 'Session ID is required' 
+    });
+  }
+  
+  if (!saveName || typeof saveName !== 'string' || !saveName.trim()) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'INVALID_SAVE_NAME',
+      message: 'Save name is required and must be a string' 
+    });
+  }
+  
+  // Validate save name format
+  const cleanSaveName = saveName.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+  if (cleanSaveName.length === 0) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'INVALID_SAVE_NAME',
+      message: 'Save name contains only invalid characters' 
+    });
+  }
+  
+  if (cleanSaveName.length > 30) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'INVALID_SAVE_NAME',
+      message: 'Save name must be 30 characters or less' 
+    });
+  }
+  
+  if (!gameState || typeof gameState !== 'object') {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'INVALID_GAME_STATE',
+      message: 'Valid game state is required' 
+    });
+  }
+  
+  try {
+    // Check save count limit
+    const saveCount = await getSaveCount(sessionId);
+    if (saveCount >= 5) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'SAVE_LIMIT_EXCEEDED',
+        message: 'Maximum of 5 saves allowed per session' 
+      });
+    }
+    
+    await ensureSaveDir(sessionId);
+    
+    // Check for duplicate and find unique name
+    let finalSaveName = cleanSaveName;
+    if (await saveExists(sessionId, cleanSaveName)) {
+      // Auto-suggest incremented name
+      finalSaveName = await findUniqueSaveName(sessionId, cleanSaveName);
+    }
+    
+    // Write save file
+    const filePath = getSaveFilePath(sessionId, finalSaveName);
+    const saveData = {
+      gameState,
+      timestamp: new Date().toISOString(),
+      sessionId,
+      saveName: finalSaveName
+    };
+    
+    await fs.writeFile(filePath, JSON.stringify(saveData, null, 2));
+    
+    // Check file size
+    const stats = await fs.stat(filePath);
+    const fileSizeKB = stats.size / 1024;
+    if (fileSizeKB > 5) {
+      console.warn(`[SAVE] Save file exceeds 5KB: ${fileSizeKB.toFixed(2)}KB`);
+    }
+    
+    return res.json({ 
+      success: true, 
+      message: `Saved as ${finalSaveName}!`,
+      saveName: finalSaveName,
+      fileSizeKB: Math.round(fileSizeKB * 100) / 100
+    });
+    
+  } catch (error) {
+    console.error('[SAVE] Error:', error.message);
+    return res.status(500).json({ 
+      success: false, 
+      error: 'SAVE_FAILED',
+      message: 'Failed to save game: ' + error.message 
+    });
+  }
+});
+
+// ENDPOINT 2: POST /api/load
+app.post('/api/load', async (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  const { saveName } = req.body;
+  
+  if (!sessionId) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'MISSING_SESSION_ID',
+      message: 'Session ID is required' 
+    });
+  }
+  
+  if (!saveName || typeof saveName !== 'string' || !saveName.trim()) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'INVALID_SAVE_NAME', 
+      message: 'Save name is required' 
+    });
+  }
+  
+  try {
+    const filePath = getSaveFilePath(sessionId, saveName);
+    
+    // Check if file exists
+    try {
+      await fs.access(filePath);
+    } catch (error) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'SAVE_NOT_FOUND',
+        message: `Save file '${saveName}' not found` 
+      });
+    }
+    
+    // Read and parse save file
+    const fileContent = await fs.readFile(filePath, 'utf8');
+    const saveData = JSON.parse(fileContent);
+    
+    if (!saveData.gameState) {
+      return res.status(500).json({ 
+        success: false, 
+        error: 'INVALID_SAVE_FILE',
+        message: 'Save file is corrupted or invalid' 
+      });
+    }
+    
+    // Update session state with loaded game state
+    sessionStates.set(sessionId, {
+      gameState: saveData.gameState,
+      isFirstTurn: false
+    });
+    
+    return res.json({ 
+      success: true, 
+      gameState: saveData.gameState,
+      sessionId: sessionId,
+      message: `Game loaded from '${saveName}'`
+    });
+    
+  } catch (error) {
+    console.error('[LOAD] Error:', error.message);
+    if (error instanceof SyntaxError) {
+      return res.status(500).json({ 
+        success: false, 
+        error: 'LOAD_FAILED',
+        message: 'Save file is corrupted (invalid JSON)' 
+      });
+    }
+    return res.status(500).json({ 
+      success: false, 
+      error: 'LOAD_FAILED',
+      message: 'Failed to load game: ' + error.message 
+    });
+  }
+});
+
+// ENDPOINT 3: GET /api/newsave
+app.get('/api/newsave', (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  
+  try {
+    const freshState = Engine.initState();
+    let resolvedSessionId = sessionId;
+    
+    if (sessionId && sessionStates.has(sessionId)) {
+      // Reset existing session
+      sessionStates.set(sessionId, {
+        gameState: freshState,
+        isFirstTurn: true
+      });
+    } else {
+      // Create new session
+      resolvedSessionId = generateSessionId();
+      sessionStates.set(resolvedSessionId, {
+        gameState: freshState,
+        isFirstTurn: true
+      });
+    }
+    
+    return res.json({ 
+      success: true, 
+      gameState: freshState,
+      sessionId: resolvedSessionId,
+      message: "New game started"
+    });
+    
+  } catch (error) {
+    console.error('[NEWSAVE] Error:', error.message);
+    return res.status(500).json({ 
+      success: false, 
+      error: 'NEW_GAME_FAILED',
+      message: 'Failed to start new game: ' + error.message 
+    });
+  }
+});
+// Bonus endpoint: GET /api/saves - List all saves for a session
+app.get('/api/saves', async (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  
+  if (!sessionId) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'MISSING_SESSION_ID',
+      message: 'Session ID is required' 
+    });
+  }
+  
+  try {
+    const savePath = getSavePath(sessionId);
+    let files = [];
+    
+    try {
+      files = await fs.readdir(savePath);
+    } catch (error) {
+      // Directory doesn't exist yet, return empty list
+      return res.json({ 
+        success: true, 
+        saves: [],
+        count: 0 
+      });
+    }
+    
+    const saves = files
+      .filter(file => file.endsWith('.json'))
+      .map(file => {
+        const saveName = file.replace('.json', '');
+        return { name: saveName };
+      });
+    
+    return res.json({ 
+      success: true, 
+      saves: saves,
+      count: saves.length 
+    });
+    
+  } catch (error) {
+    console.error('[SAVES] Error:', error.message);
+    return res.status(500).json({ 
+      success: false, 
+      error: 'LIST_SAVES_FAILED',
+      message: 'Failed to list saves: ' + error.message 
+    });
+  }
+});
+
+// Existing narrate endpoint begins here
 app.post('/narrate', async (req, res) => {
   const sessionId = req.headers['x-session-id'];
   const { sessionId: resolvedSessionId, gameState: sessionGameState, isFirstTurn: sessionIsFirstTurn } = getSessionState(sessionId);
@@ -140,7 +470,6 @@ app.post('/narrate', async (req, res) => {
       restart: true
     });
   }
-  
   // --- Semantic Parser integration (Phase 2) ---
   const userInput = String(action);
   const gameContext = {
@@ -278,6 +607,7 @@ app.post('/narrate', async (req, res) => {
       });
     }
   }
+
   // --- Scene: current cell + nearby cells (N,S,E,W) ---
   const pos = gameState?.world?.position || {};
   const l1w = (gameState?.world?.l1_default?.w) || 12;
