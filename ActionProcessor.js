@@ -249,5 +249,6 @@ function validateAndQueueIntent(state, normalizedIntent){
 
 module.exports = {
   validateAndQueueIntent,
-  parseIntent
+  parseIntent,
+  applyPlayerActions
 };
