@@ -39,28 +39,26 @@ let isFirstTurn = true;
 
 function initializeGame() {
   let state = null;
-  
   if (Engine && typeof Engine.initState === 'function') {
     state = Engine.initState();
   } else {
     state = {
       player: { mx: 0, my: 0, layer: 1, inventory: [] },
-      world: {
-        position: { mx: 0, my: 0, lx: 0, ly: 0 },
-        current_layer: 1,
-        l1_default: { w: 12, h: 12 },
-        cells: {},
-        npcs: []
-      }
+      world: { npcs: [], cells: {}, l2_active: null, l3_active: null, current_layer: 1, position: { mx:0, my:0, lx:6, ly:6 }, l1_default: { w: 12, h: 12 } }
     };
   }
   gameState = state;
   isFirstTurn = true;
-  return { narrative: "World initialized.", state };
+  return {
+    status: "world_created",
+    state: gameState,
+    prompt: "Describe your world in 3 sentences."
+  };
 }
 
 app.get('/', (req, res) => {
-  res.send('WorldGen server is running');
+  const htmlPath = path.join(__dirname, 'Index.html');
+  res.sendFile(htmlPath);
 });
 
 app.post('/init', (req, res) => {
@@ -84,13 +82,6 @@ app.post('/narrate', async (req, res) => {
     const init = initializeGame();
     gameState = init.state;
   }
-  let debug = {
-    parser: "none",
-    input: userInput,
-    intent: (parseResult && parseResult.intent) ? parseResult.intent : null,
-    confidence: (parseResult && typeof parseResult.confidence === 'number') ? parseResult.confidence : 0,
-    clarification: null
-  };
   const restartKeywords = ["new world", "restart", "begin again"];
   const actionLower = String(action).toLowerCase();
   if (restartKeywords.some(kw => actionLower.includes(kw))) {
@@ -99,10 +90,10 @@ app.post('/narrate', async (req, res) => {
     return res.json({
       narrative: "Describe your world in 3 sentences.",
       state: gameState,
-      restart: true,
-      debug: debug
+      restart: true
     });
   }
+  
   // --- Semantic Parser integration (Phase 2) ---
   const userInput = String(action);
   const gameContext = {
@@ -121,25 +112,53 @@ app.post('/narrate', async (req, res) => {
     parseResult = { success: false, error: 'LLM_UNAVAILABLE', intent: null };
     console.warn('[PARSER] exception in semantic parser:', e?.message);
   }
-  
-  // First-turn vs subsequent turns
+  let debug = {
+    parser: "none",
+    input: userInput,
+    intent: (parseResult && parseResult.intent) ? parseResult.intent : null,
+    confidence: (parseResult && typeof parseResult.confidence === 'number') ? parseResult.confidence : 0,
+    clarification: null
+  };
+
+  // Before-turn debug info
+  const beforeCells = Object.keys(gameState?.world?.cells || {}).length;
+  console.log('[turn] cells_before=', beforeCells);
+
+  // First turn: seed world using WORLD_PROMPT through Engine
+  let engineOutput = null;
   if (isFirstTurn === true) {
     isFirstTurn = false;
+    const inputObj = mapActionToInput(action, "WORLD_PROMPT");
+    try {
+      engineOutput = Engine.buildOutput(gameState, inputObj);
+      if (engineOutput && engineOutput.state) {
+        gameState = engineOutput.state;
+      }
+    } catch (err) {
+      console.error('Engine error on first turn:', err.message);
+      return res.json({ 
+        error: `engine_failed: ${err.message}`, 
+        narrative: "The engine encountered an error initializing the world.",
+        state: gameState,
+        debug 
+      });
+    }
   } else {
-    // no-op; maintaining flag for potential future use
-  }
-
-  // Action mapping + Engine execution
+    // Ongoing turn: infer MOVE vs FREEFORM and call Engine
+  
+  // Semantic parse branching with legacy fallback
   try {
-    let engineOutput = null;
+    if (!Engine.buildOutput) {
+      throw new Error('Engine.buildOutput is not a function');
+    }
 
-    // Phase 3: if parser wants clarification, short-circuit with a message
-    if (parseResult && parseResult.success === true && typeof parseResult.need_clarification === 'boolean' && parseResult.need_clarification) {
+    // Clarify if low confidence (only for non-first-turn)
+    if (parseResult && parseResult.success === true && typeof parseResult.confidence === 'number' && parseResult.confidence < 0.5) {
       console.log('[PARSER] semantic_clarify input="%s" confidence=%s', userInput, parseResult.confidence);
       debug.parser = "semantic_clarify";
       debug.clarification = "awaiting_confirmation";
       return res.json({
-        narrative: `[CLARIFICATION] I didn't quite understand. Did you mean to "${parseResult.intent?.primaryAction?.action || '...'}"? (yes/no/try again)`,
+        narrative: `[CLARIFICATION] I didn't quite understand that. Did you mean to: ${parseResult.intent?.primaryAction?.action || '...'}? (yes/no/try again)`,
         state: gameState,
         debug
       });
@@ -148,12 +167,13 @@ app.post('/narrate', async (req, res) => {
     let inputObj = null;
 
     if (parseResult && parseResult.success === true && typeof parseResult.confidence === 'number' && parseResult.confidence >= 0.5) {
-      console.log('[PARSER] semantic_ok input="%s" action="%s" conf=%s', userInput, parseResult.intent?.primaryAction?.action, parseResult.confidence);
+      console.log('[PARSER] semantic_ok input="%s" action="%s" confidence=%s', userInput, parseResult.intent?.primaryAction?.action, parseResult.confidence);
       debug.parser = "semantic";
       // Phase 4: validate queue and execute sequentially
-      const validation = validateAndQueueIntent(parseResult.intent);
-      if (!validation.ok) {
+      const validation = validateAndQueueIntent(gameState, parseResult.intent);
+      if (!validation.valid) {
         return res.json({
+          success: true,
           narrative: `Action invalid: ${validation.reason}`,
           state: gameState,
           debug: { ...debug, parser: "semantic", error: "INVALID_ACTION", reason: validation.reason, validation: validation.stateValidation }
@@ -184,11 +204,11 @@ app.post('/narrate', async (req, res) => {
       if (parsed && parsed.action === "move" && parsed.dir) {
         inputObj.player_intent.dir = parsed.dir;
       }
+    }
 
-      engineOutput = Engine.buildOutput(gameState, inputObj);
-      if (engineOutput && engineOutput.state) {
-        gameState = engineOutput.state;
-      }
+    engineOutput = Engine.buildOutput(gameState, inputObj);
+    if (engineOutput && engineOutput.state) {
+      gameState = engineOutput.state;
     }
   } catch (err) {
     console.error('Engine error:', err.message);
@@ -199,6 +219,8 @@ app.post('/narrate', async (req, res) => {
       debug
     });
   }
+}
+
 // --- Scene: current cell + nearby cells (N,S,E,W) ---
   const pos = gameState?.world?.position || {};
   const l1w = (gameState?.world?.l1_default?.w) || 12;
@@ -214,34 +236,32 @@ if (!cellsMap[curKey]) {
   const curCellRaw = cellsMap[curKey];
 
   const currentCell = {
-    type: curCellRaw?.type || 'unknown',
-    subtype: curCellRaw?.subtype || 'unknown',
-    description: curCellRaw?.description || 'A place of unknown description.',
+    description: (curCellRaw && curCellRaw.description) || "An empty space",
+    type: (curCellRaw && curCellRaw.type) || "void",
+    subtype: (curCellRaw && curCellRaw.subtype) || "",
+    is_custom: !!(curCellRaw && curCellRaw.is_custom),
+    key: curKey
   };
 
-  const dirs = [
-    { name: 'North', dx:  0, dy: -1 },
-    { name: 'South', dx:  0, dy:  1 },
-    { name: 'East',  dx:  1, dy:  0 },
-    { name: 'West',  dx: -1, dy:  0 }
+  const deltas = [
+    { name: "North", dx: 0, dy: -1 },
+    { name: "South", dx: 0, dy:  1 },
+    { name: "East",  dx: 1, dy:  0 },
+    { name: "West",  dx:-1, dy:  0 }
   ];
 
-  function safeGetCell(mx, my, lx, ly) {
-    const k = cellKey(mx, my, clamp(lx, 0, l1w-1), clamp(ly, 0, l1h-1));
-    const c = cellsMap[k];
-    if (!c) return { type: 'unknown', subtype: 'unknown', description: 'Unknown area' };
-    return c;
-  }
-
-  const nearbyCells = dirs.map(d => {
-    const lx2 = clamp((pos.lx ?? 0) + d.dx, 0, l1w-1);
-    const ly2 = clamp((pos.ly ?? 0) + d.dy, 0, l1h-1);
-    const c = safeGetCell(pos.mx ?? 0, pos.my ?? 0, lx2, ly2);
+  const nearbyCells = deltas.map(d => {
+    const lx = clamp((pos.lx || 0) + d.dx, 0, l1w - 1);
+    const ly = clamp((pos.ly || 0) + d.dy, 0, l1h - 1);
+    const key = cellKey(pos.mx, pos.my, lx, ly);
+    const c = cellsMap[key];
     return {
       dir: d.name,
-      type: c.type || 'unknown',
-      subtype: c.subtype || 'unknown',
-      description: c.description || 'Unknown area'
+      key,
+      description: (c && c.description) || "Unknown",
+      type: (c && c.type) || "void",
+      subtype: (c && c.subtype) || "",
+      is_custom: !!(c && c.is_custom)
     };
   });
 
@@ -298,11 +318,15 @@ Player action: "${action}"
 CONSTRAINTS:
 - If the player input is in parentheses (OOC), break character immediately and answer their technical question directly
 - Narrate ONLY what the player can see based on current location and adjacent areas
-- Never fabricate inventory or NPCs not present in the engine output
-- Keep narration between 3–6 sentences unless the player asks for more detail
+- Do NOT invent dungeons, doors, or architecture not mentioned above
+- Do NOT reference locations you weren't provided
+- Write a full paragraph of immersive description
 
----BEGIN_DEBUG---
+DEBUG_FOOTER:
+At the end of your narration, append this metadata block:
+---DEBUG---
 current_cell: ${scene.currentCell.type}/${scene.currentCell.subtype}
+cell_description: ${scene.currentCell.description.substring(0, 50)}...
 adjacent_cells: [${scene.nearbyCells.map(c => c.dir + ':' + c.type).join(', ')}]
 npcs_count: ${scene.npcs.length}
 inventory_count: ${scene.inventory.length}
@@ -328,7 +352,83 @@ inventory_count: ${scene.inventory.length}
       error: err.message
     , debug} );
   }
+    if (!process.env.DEEPSEEK_API_KEY) {
+    return res.json({ 
+      error: 'DEEPSEEK_API_KEY not set',
+      narrative: "The engine processes your action.",
+      state: gameState,
+      engine_output: engineOutput,
+      scene
+    });
+  }
+  console.log('[narrate] scene:', JSON.stringify(scene, null, 2));
+
+  try {
+    const response = await axios.post('https://api.deepseek.com/v1/chat/completions', {
+      model: 'deepseek-chat',
+      messages: [{
+        role: 'user',
+        content: `You are narrating an interactive roguelike game driven by a procedural engine.
+- Translate engine output (terrain types, cell descriptions, entity lists) into vivid, coherent prose
+- Maintain environmental consistency: terrain types define what the player can see and interact with
+- Build narrative tension through descriptions of current terrain and environmental features
+- React to player action by describing immediate sensory consequences within the game world
+
+CURRENT LOCATION:
+${scene.currentCell.description}
+(Terrain: ${scene.currentCell.type}/${scene.currentCell.subtype})
+
+ADJACENT AREAS:
+North: ${scene.nearbyCells.find(c => c.dir === 'North')?.description || 'Unknown'}
+South: ${scene.nearbyCells.find(c => c.dir === 'South')?.description || 'Unknown'}
+East: ${scene.nearbyCells.find(c => c.dir === 'East')?.description || 'Unknown'}
+West: ${scene.nearbyCells.find(c => c.dir === 'West')?.description || 'Unknown'}
+
+INVENTORY: ${JSON.stringify(scene.inventory)}
+NPCs PRESENT: ${scene.npcs && scene.npcs.length > 0 ? JSON.stringify(scene.npcs) : 'None'}
+
+Player action: "${action}"
+
+CONSTRAINTS:
+- If the player input is in parentheses (OOC), break character immediately and answer their technical question directly
+- Narrate ONLY what the player can see based on current location and adjacent areas
+- Do NOT invent dungeons, doors, or architecture not mentioned above
+- Do NOT reference locations you weren't provided
+- Write a full paragraph of immersive description
+
+DEBUG_FOOTER:
+At the end of your narration, append this metadata block:
+---DEBUG---
+current_cell: ${scene.currentCell.type}/${scene.currentCell.subtype}
+cell_description: ${scene.currentCell.description.substring(0, 50)}...
+adjacent_cells: [${scene.nearbyCells.map(c => c.dir + ':' + c.type).join(', ')}]
+npcs_count: ${scene.npcs.length}
+inventory_count: ${scene.inventory.length}
+---END_DEBUG---`
+      }],
+      temperature: 0.7
+    }, {
+      headers: {
+        'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const narrative = response.data.choices[0].message.content;
+    return res.json({ narrative, state: gameState, engine_output: engineOutput, scene, debug });
+  } catch (err) {
+    console.error('DeepSeek error:', err.message);
+    return res.json({ 
+      narrative: "The engine processes your action.",
+      state: gameState,
+      engine_output: engineOutput,
+      scene,
+      error: err.message,
+      debug
+    });
+  }
 });
+
 app.get('/status', (req, res) => {
   return res.json({
     status: 'running',
