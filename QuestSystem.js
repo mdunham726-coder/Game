@@ -3,6 +3,7 @@
 // Implements constraint-first architecture with full API integration
 
 const crypto = require('crypto');
+const axios = require('axios');
 
 // =============================================================================
 // CONSTANTS AND CONFIGURATION
