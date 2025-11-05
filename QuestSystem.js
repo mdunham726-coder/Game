@@ -823,15 +823,6 @@ class QuestSystem {
   }
 }
 
-// Export the complete system
-module.exports = {
-  QuestSystem,
-  QuestConstraintEngine,
-  DeepSeekIntegration,
-  QuestValidator,
-  FallbackQuestSystem,
-  QUEST_CONFIG
-};
 // =============================================================================
 // QUEST VALIDATOR (UPDATED FOR COMPLETE NARRATIVE VALIDATION)
 // =============================================================================
@@ -1069,3 +1060,12 @@ class QuestValidator {
 // =============================================================================
 // FILE COMPLETE - PHASE 3B READY
 // =============================================================================
+
+module.exports = {
+  QuestSystem,
+  QuestConstraintEngine,
+  DeepSeekIntegration,
+  QuestValidator,
+  FallbackQuestSystem,
+  QUEST_CONFIG
+};
