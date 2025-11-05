@@ -92,148 +92,45 @@ async function saveExists(sessionId, saveName) {
     return false;
   }
 }
-function getActionKind(a) { return (a && a.action === 'move') ? 'MOVE' : 'FREEFORM'; }
+// =============================================================================
+// SAVE/LOAD UTILITY FUNCTIONS (Option 3 Hybrid Approach)
+// =============================================================================
 
-function mapActionToInput(action, kind = "FREEFORM") {
-  const result = {
-    player_intent: {
-      kind: kind,
-      raw: String(action)
-    },
-    meta: {
-      source: "frontend",
-      ts: new Date().toISOString()
-    }
-  };
-  
-  // Add top-level WORLD_PROMPT for Engine compatibility
-  if (kind === "WORLD_PROMPT") {
-    result.WORLD_PROMPT = String(action);
-  }
-  
-  return result;
-}
-
-function initializeGame() {
-  let state = null;
-  if (Engine && typeof Engine.initState === 'function') {
-    state = Engine.initState();
-  } else {
-    state = {
-      player: { mx: 0, my: 0, layer: 1, inventory: [] },
-      world: { npcs: [], cells: {}, l2_active: null, l3_active: null, current_layer: 1, position: { mx:0, my:0, lx:6, ly:6 }, l1_default: { w: 12, h: 12 } }
-    };
-  }
-  return {
-    status: "world_created",
-    state: state,
-    prompt: "Describe your world in 3 sentences."
-  };
-}
-
-app.get('/', (req, res) => {
-  const htmlPath = path.join(__dirname, 'Index.html');
-  res.sendFile(htmlPath);
-});
-
-app.post('/init', (req, res) => {
-  const sessionId = req.headers['x-session-id'];
-  const { sessionId: resolvedSessionId, gameState, isFirstTurn } = getSessionState(sessionId);
-  const result = {
-    sessionId: resolvedSessionId,
-    status: "world_created",
-    state: gameState,
-    prompt: "Describe your world in 3 sentences."
-  };
-  return res.json(result);
-});
-
-app.post('/reset', (req, res) => {
-  const sessionId = req.headers['x-session-id'];
-  if (sessionId && sessionStates.has(sessionId)) {
-    const newState = initializeGame();
-    sessionStates.set(sessionId, {
-      gameState: newState.state,
-      isFirstTurn: true
-    });
-  }
-  const { sessionId: resolvedSessionId, gameState, isFirstTurn } = getSessionState(sessionId);
-  const result = {
-    sessionId: resolvedSessionId,
-    status: "world_created", 
-    state: gameState,
-    prompt: "Describe your world in 3 sentences."
-  };
-  return res.json(result);
-});
-// ENDPOINT 1: POST /api/save
-app.post('/api/save', async (req, res) => {
-  const sessionId = req.headers['x-session-id'];
-  const { saveName, gameState } = req.body;
-  
+async function performSave(sessionId, saveName, gameState) {
   if (!sessionId) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'MISSING_SESSION_ID',
-      message: 'Session ID is required' 
-    });
+    return { success: false, error: 'MISSING_SESSION_ID', message: 'Session ID is required' };
   }
   
   if (!saveName || typeof saveName !== 'string' || !saveName.trim()) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'INVALID_SAVE_NAME',
-      message: 'Save name is required and must be a string' 
-    });
+    return { success: false, error: 'INVALID_SAVE_NAME', message: 'Save name is required and must be a string' };
   }
   
-  // Validate save name format
   const cleanSaveName = saveName.replace(/[^a-zA-Z0-9\s]/g, '').trim();
   if (cleanSaveName.length === 0) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'INVALID_SAVE_NAME',
-      message: 'Save name contains only invalid characters' 
-    });
+    return { success: false, error: 'INVALID_SAVE_NAME', message: 'Save name contains only invalid characters' };
   }
   
   if (cleanSaveName.length > 30) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'INVALID_SAVE_NAME',
-      message: 'Save name must be 30 characters or less' 
-    });
+    return { success: false, error: 'INVALID_SAVE_NAME', message: 'Save name must be 30 characters or less' };
   }
   
   if (!gameState || typeof gameState !== 'object') {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'INVALID_GAME_STATE',
-      message: 'Valid game state is required' 
-    });
+    return { success: false, error: 'INVALID_GAME_STATE', message: 'Valid game state is required' };
   }
   
   try {
-    // Check save count limit
     const saveCount = await getSaveCount(sessionId);
     if (saveCount >= 5) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'SAVE_LIMIT_EXCEEDED',
-        message: 'Maximum of 5 saves allowed per session' 
-      });
+      return { success: false, error: 'SAVE_LIMIT_EXCEEDED', message: 'Maximum of 5 saves allowed per session' };
     }
     
     await ensureSaveDir(sessionId);
     
-    // Check for duplicate and find unique name
     let finalSaveName = cleanSaveName;
     if (await saveExists(sessionId, cleanSaveName)) {
-      // Auto-suggest incremented name
       finalSaveName = await findUniqueSaveName(sessionId, cleanSaveName);
     }
     
-    // Write save file
     const filePath = getSaveFilePath(sessionId, finalSaveName);
     const saveData = {
       gameState,
@@ -244,156 +141,78 @@ app.post('/api/save', async (req, res) => {
     
     await fs.writeFile(filePath, JSON.stringify(saveData, null, 2));
     
-    // Check file size
     const stats = await fs.stat(filePath);
     const fileSizeKB = stats.size / 1024;
     if (fileSizeKB > 5) {
       console.warn(`[SAVE] Save file exceeds 5KB: ${fileSizeKB.toFixed(2)}KB`);
     }
     
-    return res.json({ 
+    return { 
       success: true, 
       message: `Saved as ${finalSaveName}!`,
       saveName: finalSaveName,
       fileSizeKB: Math.round(fileSizeKB * 100) / 100
-    });
+    };
     
   } catch (error) {
     console.error('[SAVE] Error:', error.message);
-    return res.status(500).json({ 
-      success: false, 
-      error: 'SAVE_FAILED',
-      message: 'Failed to save game: ' + error.message 
-    });
+    return { success: false, error: 'SAVE_FAILED', message: 'Failed to save game: ' + error.message };
   }
-});
+}
 
-// ENDPOINT 2: POST /api/load
-app.post('/api/load', async (req, res) => {
-  const sessionId = req.headers['x-session-id'];
-  const { saveName } = req.body;
-  
+async function performLoad(sessionId, saveName) {
   if (!sessionId) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'MISSING_SESSION_ID',
-      message: 'Session ID is required' 
-    });
+    return { success: false, error: 'MISSING_SESSION_ID', message: 'Session ID is required' };
   }
   
   if (!saveName || typeof saveName !== 'string' || !saveName.trim()) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'INVALID_SAVE_NAME', 
-      message: 'Save name is required' 
-    });
+    return { success: false, error: 'INVALID_SAVE_NAME', message: 'Save name is required' };
   }
   
   try {
     const filePath = getSaveFilePath(sessionId, saveName);
     
-    // Check if file exists
     try {
       await fs.access(filePath);
     } catch (error) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'SAVE_NOT_FOUND',
-        message: `Save file '${saveName}' not found` 
-      });
+      return { success: false, error: 'SAVE_NOT_FOUND', message: `Save file '${saveName}' not found` };
     }
     
-    // Read and parse save file
     const fileContent = await fs.readFile(filePath, 'utf8');
     const saveData = JSON.parse(fileContent);
     
     if (!saveData.gameState) {
-      return res.status(500).json({ 
-        success: false, 
-        error: 'INVALID_SAVE_FILE',
-        message: 'Save file is corrupted or invalid' 
-      });
+      return { success: false, error: 'INVALID_SAVE_FILE', message: 'Save file is corrupted or invalid' };
     }
     
-    // Update session state with loaded game state
-    sessionStates.set(sessionId, {
-      gameState: saveData.gameState,
-      isFirstTurn: false
-    });
-    
-    return res.json({ 
+    return { 
       success: true, 
       gameState: saveData.gameState,
-      sessionId: sessionId,
       message: `Game loaded from '${saveName}'`
-    });
+    };
     
   } catch (error) {
     console.error('[LOAD] Error:', error.message);
     if (error instanceof SyntaxError) {
-      return res.status(500).json({ 
-        success: false, 
-        error: 'LOAD_FAILED',
-        message: 'Save file is corrupted (invalid JSON)' 
-      });
+      return { success: false, error: 'LOAD_FAILED', message: 'Save file is corrupted (invalid JSON)' };
     }
-    return res.status(500).json({ 
-      success: false, 
-      error: 'LOAD_FAILED',
-      message: 'Failed to load game: ' + error.message 
-    });
+    return { success: false, error: 'LOAD_FAILED', message: 'Failed to load game: ' + error.message };
   }
-});
+}
 
-// ENDPOINT 3: GET /api/newsave
-app.get('/api/newsave', (req, res) => {
-  const sessionId = req.headers['x-session-id'];
-  
+function performNewGame(sessionId) {
   try {
     const freshState = Engine.initState();
-    let resolvedSessionId = sessionId;
-    
-    if (sessionId && sessionStates.has(sessionId)) {
-      // Reset existing session
-      sessionStates.set(sessionId, {
-        gameState: freshState,
-        isFirstTurn: true
-      });
-    } else {
-      // Create new session
-      resolvedSessionId = generateSessionId();
-      sessionStates.set(resolvedSessionId, {
-        gameState: freshState,
-        isFirstTurn: true
-      });
-    }
-    
-    return res.json({ 
-      success: true, 
-      gameState: freshState,
-      sessionId: resolvedSessionId,
-      message: "New game started"
-    });
-    
+    return { success: true, gameState: freshState, message: "New game started" };
   } catch (error) {
     console.error('[NEWSAVE] Error:', error.message);
-    return res.status(500).json({ 
-      success: false, 
-      error: 'NEW_GAME_FAILED',
-      message: 'Failed to start new game: ' + error.message 
-    });
+    return { success: false, error: 'NEW_GAME_FAILED', message: 'Failed to start new game: ' + error.message };
   }
-});
-// Bonus endpoint: GET /api/saves - List all saves for a session
-app.get('/api/saves', async (req, res) => {
-  const sessionId = req.headers['x-session-id'];
-  
+}
+
+async function listSavesData(sessionId) {
   if (!sessionId) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'MISSING_SESSION_ID',
-      message: 'Session ID is required' 
-    });
+    return { success: false, error: 'MISSING_SESSION_ID', message: 'Session ID is required' };
   }
   
   try {
@@ -403,12 +222,7 @@ app.get('/api/saves', async (req, res) => {
     try {
       files = await fs.readdir(savePath);
     } catch (error) {
-      // Directory doesn't exist yet, return empty list
-      return res.json({ 
-        success: true, 
-        saves: [],
-        count: 0 
-      });
+      return { success: true, saves: [], count: 0 };
     }
     
     const saves = files
@@ -418,21 +232,217 @@ app.get('/api/saves', async (req, res) => {
         return { name: saveName };
       });
     
-    return res.json({ 
-      success: true, 
-      saves: saves,
-      count: saves.length 
-    });
-    
+    return { success: true, saves: saves, count: saves.length };
   } catch (error) {
     console.error('[SAVES] Error:', error.message);
-    return res.status(500).json({ 
-      success: false, 
-      error: 'LIST_SAVES_FAILED',
-      message: 'Failed to list saves: ' + error.message 
-    });
+    return { success: false, error: 'LIST_SAVES_FAILED', message: 'Failed to list saves: ' + error.message };
+  }
+}
+// =============================================================================
+// REFACTORED API ENDPOINTS (Using Utility Functions)
+// =============================================================================
+
+// ENDPOINT 1: POST /api/save
+app.post('/api/save', async (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  const { saveName, gameState } = req.body;
+  
+  const result = await performSave(sessionId, saveName, gameState);
+  
+  if (result.success) {
+    return res.json(result);
+  } else {
+    return res.status(400).json(result);
   }
 });
+
+// ENDPOINT 2: POST /api/load
+app.post('/api/load', async (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  const { saveName } = req.body;
+  
+  const result = await performLoad(sessionId, saveName);
+  
+  if (result.success) {
+    // Update session state with loaded game state
+    sessionStates.set(sessionId, {
+      gameState: result.gameState,
+      isFirstTurn: false
+    });
+    
+    return res.json({ 
+      success: true, 
+      gameState: result.gameState,
+      sessionId: sessionId,
+      message: result.message
+    });
+  } else {
+    return res.status(result.error === 'SAVE_NOT_FOUND' ? 404 : 400).json(result);
+  }
+});
+
+// ENDPOINT 3: GET /api/newsave
+app.get('/api/newsave', (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  
+  const result = performNewGame(sessionId);
+  
+  if (result.success) {
+    let resolvedSessionId = sessionId;
+    
+    if (sessionId && sessionStates.has(sessionId)) {
+      // Reset existing session
+      sessionStates.set(sessionId, {
+        gameState: result.gameState,
+        isFirstTurn: true
+      });
+    } else {
+      // Create new session
+      resolvedSessionId = generateSessionId();
+      sessionStates.set(resolvedSessionId, {
+        gameState: result.gameState,
+        isFirstTurn: true
+      });
+    }
+    
+    return res.json({ 
+      success: true, 
+      gameState: result.gameState,
+      sessionId: resolvedSessionId,
+      message: result.message
+    });
+  } else {
+    return res.status(500).json(result);
+  }
+});
+
+// Bonus endpoint: GET /api/saves - List all saves for a session
+app.get('/api/saves', async (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  
+  const result = await listSavesData(sessionId);
+  
+  if (result.success) {
+    return res.json(result);
+  } else {
+    return res.status(400).json(result);
+  }
+});
+// =============================================================================
+// SYSTEM COMMAND DETECTION FUNCTION
+// =============================================================================
+
+async function detectSystemCommand(input, sessionId, currentGameState, sessionStates) {
+  const userInput = String(input).trim().toLowerCase();
+  
+  // Save Command: "save", "save myquest", "save as my adventure"
+  const saveMatch = userInput.match(/^save(?:\s+(?:as\s+)?(.+))?$/i);
+  if (saveMatch) {
+    let saveName = saveMatch[1] ? saveMatch[1].trim() : `Save ${new Date().toLocaleTimeString()}`;
+    
+    // Sanitize save name
+    saveName = saveName.replace(/[^a-zA-Z0-9\s]/g, '').trim();
+    if (saveName.length > 30) {
+      saveName = saveName.substring(0, 30);
+    }
+    if (saveName.length === 0) {
+      saveName = `Save ${new Date().toLocaleTimeString()}`;
+    }
+    
+    const result = await performSave(sessionId, saveName, currentGameState);
+    return {
+      isSystemCommand: true,
+      message: result.success ? `✓ ${result.message}` : `❌ ${result.message}`,
+      newState: currentGameState // State doesn't change on save
+    };
+  }
+  
+  // Load Command: "load myquest", "load save1"
+  const loadMatch = userInput.match(/^load\s+(.+)$/i);
+  if (loadMatch) {
+    const saveName = loadMatch[1].trim();
+    
+    const result = await performLoad(sessionId, saveName);
+    if (result.success) {
+      // Update session state for subsequent turns
+      sessionStates.set(sessionId, {
+        gameState: result.gameState,
+        isFirstTurn: false
+      });
+      
+      return {
+        isSystemCommand: true,
+        message: `✓ ${result.message}`,
+        newState: result.gameState
+      };
+    } else {
+      return {
+        isSystemCommand: true,
+        message: `❌ ${result.message}`,
+        newState: currentGameState
+      };
+    }
+  }
+  
+  // New Game Command: "new game", "restart", "start over"
+  const newGameMatch = userInput.match(/^(?:new\s+game|restart|start\s+over)$/i);
+  if (newGameMatch) {
+    const result = performNewGame(sessionId);
+    if (result.success) {
+      // Update session state
+      sessionStates.set(sessionId, {
+        gameState: result.gameState,
+        isFirstTurn: true
+      });
+      
+      return {
+        isSystemCommand: true,
+        message: `✓ ${result.message}`,
+        newState: result.gameState
+      };
+    } else {
+      return {
+        isSystemCommand: true,
+        message: `❌ ${result.message}`,
+        newState: currentGameState
+      };
+    }
+  }
+  
+  // List Saves Command: "list saves", "show saves", "my saves", "saves"
+  const listSavesMatch = userInput.match(/^(?:list\s+saves|show\s+saves|my\s+saves|saves)$/i);
+  if (listSavesMatch) {
+    const result = await listSavesData(sessionId);
+    if (result.success) {
+      if (result.count === 0) {
+        return {
+          isSystemCommand: true,
+          message: "No saves found.",
+          newState: currentGameState
+        };
+      } else {
+        const saveList = result.saves.map((save, index) => `${index + 1}. ${save.name}`).join(', ');
+        return {
+          isSystemCommand: true,
+          message: `Your saves (${result.count}): ${saveList}`,
+          newState: currentGameState
+        };
+      }
+    } else {
+      return {
+        isSystemCommand: true,
+        message: `❌ ${result.message}`,
+        newState: currentGameState
+      };
+    }
+  }
+  
+  // Not a system command
+  return { isSystemCommand: false, message: "", newState: currentGameState };
+}
+// =============================================================================
+// MODIFIED /NARRATE ENDPOINT WITH SYSTEM COMMAND INTEGRATION
+// =============================================================================
 
 // Existing narrate endpoint begins here
 app.post('/narrate', async (req, res) => {
@@ -456,6 +466,22 @@ app.post('/narrate', async (req, res) => {
     sessionStates.set(resolvedSessionId, { gameState, isFirstTurn: true });
   }
 
+  // =========================================================================
+  // SYSTEM COMMAND DETECTION (NEW INTEGRATION POINT)
+  // =========================================================================
+  const sysCmd = await detectSystemCommand(action, resolvedSessionId, gameState, sessionStates);
+  if (sysCmd.isSystemCommand) {
+    return res.json({
+      sessionId: resolvedSessionId,
+      narrative: sysCmd.message,
+      state: sysCmd.newState || gameState,
+      systemCommand: true
+    });
+  }
+  // =========================================================================
+  // END SYSTEM COMMAND DETECTION
+  // =========================================================================
+
   const restartKeywords = ["new world", "restart", "begin again"];
   const actionLower = String(action).toLowerCase();
   if (restartKeywords.some(kw => actionLower.includes(kw))) {
@@ -470,6 +496,7 @@ app.post('/narrate', async (req, res) => {
       restart: true
     });
   }
+
   // --- Semantic Parser integration (Phase 2) ---
   const userInput = String(action);
   const gameContext = {
@@ -481,6 +508,10 @@ app.post('/narrate', async (req, res) => {
     adjacent_cells: gameState?.world?.adjacent_cells || null,
     npcs_present: Array.isArray(gameState?.world?.npcs) ? gameState.world.npcs.map(n => n.name) : []
   };
+  
+  // ... [REST OF EXISTING /NARRATE LOGIC REMAINS UNCHANGED] ...
+  // Continue with existing SemanticParser, Engine, and DeepSeek API flow
+  // (Preserving all existing code below this point)
   let parseResult = null;
   try {
     parseResult = await normalizeUserIntent(userInput, gameContext);
@@ -751,6 +782,85 @@ inventory_count: ${scene.inventory.length}
       debug
     });
   }
+});
+
+// =============================================================================
+// REMAINING ENDPOINTS AND SERVER STARTUP (UNCHANGED)
+// =============================================================================
+
+function getActionKind(a) { return (a && a.action === 'move') ? 'MOVE' : 'FREEFORM'; }
+
+function mapActionToInput(action, kind = "FREEFORM") {
+  const result = {
+    player_intent: {
+      kind: kind,
+      raw: String(action)
+    },
+    meta: {
+      source: "frontend",
+      ts: new Date().toISOString()
+    }
+  };
+  
+  // Add top-level WORLD_PROMPT for Engine compatibility
+  if (kind === "WORLD_PROMPT") {
+    result.WORLD_PROMPT = String(action);
+  }
+  
+  return result;
+}
+
+function initializeGame() {
+  let state = null;
+  if (Engine && typeof Engine.initState === 'function') {
+    state = Engine.initState();
+  } else {
+    state = {
+      player: { mx: 0, my: 0, layer: 1, inventory: [] },
+      world: { npcs: [], cells: {}, l2_active: null, l3_active: null, current_layer: 1, position: { mx:0, my:0, lx:6, ly:6 }, l1_default: { w: 12, h: 12 } }
+    };
+  }
+  return {
+    status: "world_created",
+    state: state,
+    prompt: "Describe your world in 3 sentences."
+  };
+}
+
+app.get('/', (req, res) => {
+  const htmlPath = path.join(__dirname, 'Index.html');
+  res.sendFile(htmlPath);
+});
+
+app.post('/init', (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  const { sessionId: resolvedSessionId, gameState, isFirstTurn } = getSessionState(sessionId);
+  const result = {
+    sessionId: resolvedSessionId,
+    status: "world_created",
+    state: gameState,
+    prompt: "Describe your world in 3 sentences."
+  };
+  return res.json(result);
+});
+
+app.post('/reset', (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  if (sessionId && sessionStates.has(sessionId)) {
+    const newState = initializeGame();
+    sessionStates.set(sessionId, {
+      gameState: newState.state,
+      isFirstTurn: true
+    });
+  }
+  const { sessionId: resolvedSessionId, gameState, isFirstTurn } = getSessionState(sessionId);
+  const result = {
+    sessionId: resolvedSessionId,
+    status: "world_created", 
+    state: gameState,
+    prompt: "Describe your world in 3 sentences."
+  };
+  return res.json(result);
 });
 
 app.get('/status', (req, res) => {
