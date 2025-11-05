@@ -12,6 +12,25 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
+// Session state management
+const sessionStates = new Map();
+
+function generateSessionId() {
+  return Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+}
+
+function getSessionState(sessionId) {
+  if (!sessionId || !sessionStates.has(sessionId)) {
+    const newSessionId = generateSessionId();
+    const newState = initializeGame();
+    sessionStates.set(newSessionId, {
+      gameState: newState.state,
+      isFirstTurn: true
+    });
+    return { sessionId: newSessionId, ...sessionStates.get(newSessionId) };
+  }
+  return { sessionId, ...sessionStates.get(sessionId) };
+}
 function getActionKind(a) { return (a && a.action === 'move') ? 'MOVE' : 'FREEFORM'; }
 
 function mapActionToInput(action, kind = "FREEFORM") {
@@ -34,9 +53,6 @@ function mapActionToInput(action, kind = "FREEFORM") {
   return result;
 }
 
-let gameState = null;
-let isFirstTurn = true;
-
 function initializeGame() {
   let state = null;
   if (Engine && typeof Engine.initState === 'function') {
@@ -47,11 +63,9 @@ function initializeGame() {
       world: { npcs: [], cells: {}, l2_active: null, l3_active: null, current_layer: 1, position: { mx:0, my:0, lx:6, ly:6 }, l1_default: { w: 12, h: 12 } }
     };
   }
-  gameState = state;
-  isFirstTurn = true;
   return {
     status: "world_created",
-    state: gameState,
+    state: state,
     prompt: "Describe your world in 3 sentences."
   };
 }
@@ -62,32 +76,65 @@ app.get('/', (req, res) => {
 });
 
 app.post('/init', (req, res) => {
-  const result = initializeGame();
+  const sessionId = req.headers['x-session-id'];
+  const { sessionId: resolvedSessionId, gameState, isFirstTurn } = getSessionState(sessionId);
+  const result = {
+    sessionId: resolvedSessionId,
+    status: "world_created",
+    state: gameState,
+    prompt: "Describe your world in 3 sentences."
+  };
   return res.json(result);
 });
 
 app.post('/reset', (req, res) => {
-  gameState = null;
-  isFirstTurn = true;
-  const result = initializeGame();
+  const sessionId = req.headers['x-session-id'];
+  if (sessionId && sessionStates.has(sessionId)) {
+    const newState = initializeGame();
+    sessionStates.set(sessionId, {
+      gameState: newState.state,
+      isFirstTurn: true
+    });
+  }
+  const { sessionId: resolvedSessionId, gameState, isFirstTurn } = getSessionState(sessionId);
+  const result = {
+    sessionId: resolvedSessionId,
+    status: "world_created", 
+    state: gameState,
+    prompt: "Describe your world in 3 sentences."
+  };
   return res.json(result);
 });
-
 app.post('/narrate', async (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  const { sessionId: resolvedSessionId, gameState: sessionGameState, isFirstTurn: sessionIsFirstTurn } = getSessionState(sessionId);
+  
+  let gameState = sessionGameState;
+  let isFirstTurn = sessionIsFirstTurn;
+  
   const { action } = req.body;
   if (!action) {
-    return res.status(400).json({ error: 'action is required' });
+    return res.status(400).json({ 
+      sessionId: resolvedSessionId,
+      error: 'action is required' 
+    });
   }
+
   if (gameState === null) {
     const init = initializeGame();
     gameState = init.state;
+    sessionStates.set(resolvedSessionId, { gameState, isFirstTurn: true });
   }
+
   const restartKeywords = ["new world", "restart", "begin again"];
   const actionLower = String(action).toLowerCase();
   if (restartKeywords.some(kw => actionLower.includes(kw))) {
     const init = initializeGame();
     gameState = init.state;
+    isFirstTurn = true;
+    sessionStates.set(resolvedSessionId, { gameState, isFirstTurn });
     return res.json({
+      sessionId: resolvedSessionId,
       narrative: "Describe your world in 3 sentences.",
       state: gameState,
       restart: true
@@ -128,15 +175,18 @@ app.post('/narrate', async (req, res) => {
   let engineOutput = null;
   if (isFirstTurn === true) {
     isFirstTurn = false;
+    sessionStates.set(resolvedSessionId, { gameState, isFirstTurn });
     const inputObj = mapActionToInput(action, "WORLD_PROMPT");
     try {
       engineOutput = Engine.buildOutput(gameState, inputObj);
       if (engineOutput && engineOutput.state) {
         gameState = engineOutput.state;
+        sessionStates.set(resolvedSessionId, { gameState, isFirstTurn });
       }
     } catch (err) {
       console.error('Engine error on first turn:', err.message);
       return res.json({ 
+        sessionId: resolvedSessionId,
         error: `engine_failed: ${err.message}`, 
         narrative: "The engine encountered an error initializing the world.",
         state: gameState,
@@ -145,83 +195,90 @@ app.post('/narrate', async (req, res) => {
     }
   } else {
     // Ongoing turn: infer MOVE vs FREEFORM and call Engine
-  
-  // Semantic parse branching with legacy fallback
-  try {
-    if (!Engine.buildOutput) {
-      throw new Error('Engine.buildOutput is not a function');
-    }
+    try {
+      if (!Engine.buildOutput) {
+        throw new Error('Engine.buildOutput is not a function');
+      }
 
-    // Clarify if low confidence (only for non-first-turn)
-    if (parseResult && parseResult.success === true && typeof parseResult.confidence === 'number' && parseResult.confidence < 0.5) {
-      console.log('[PARSER] semantic_clarify input="%s" confidence=%s', userInput, parseResult.confidence);
-      debug.parser = "semantic_clarify";
-      debug.clarification = "awaiting_confirmation";
-      return res.json({
-        narrative: `[CLARIFICATION] I didn't quite understand that. Did you mean to: ${parseResult.intent?.primaryAction?.action || '...'}? (yes/no/try again)`,
+      // Clarify if low confidence (only for non-first-turn)
+      if (parseResult && parseResult.success === true && typeof parseResult.confidence === 'number' && parseResult.confidence < 0.5) {
+        console.log('[PARSER] semantic_clarify input="%s" confidence=%s', userInput, parseResult.confidence);
+        debug.parser = "semantic_clarify";
+        debug.clarification = "awaiting_confirmation";
+        return res.json({
+          sessionId: resolvedSessionId,
+          narrative: `[CLARIFICATION] I didn't quite understand that. Did you mean to: ${parseResult.intent?.primaryAction?.action || '...'}? (yes/no/try again)`,
+          state: gameState,
+          debug
+        });
+      }
+
+      let inputObj = null;
+
+      if (parseResult && parseResult.success === true && typeof parseResult.confidence === 'number' && parseResult.confidence >= 0.5) {
+        console.log('[PARSER] semantic_ok input="%s" action="%s" confidence=%s', userInput, parseResult.intent?.primaryAction?.action, parseResult.confidence);
+        debug.parser = "semantic";
+        // Phase 4: validate queue and execute sequentially
+        const validation = validateAndQueueIntent(gameState, parseResult.intent);
+        if (!validation.valid) {
+          return res.json({
+            sessionId: resolvedSessionId,
+            success: true,
+            narrative: `Action invalid: ${validation.reason}`,
+            state: gameState,
+            debug: { ...debug, parser: "semantic", error: "INVALID_ACTION", reason: validation.reason, validation: validation.stateValidation }
+          });
+        }
+        const allResponses = [];
+        for (const queuedAction of validation.queue) {
+          const raw = [queuedAction.action, queuedAction.target].filter(Boolean).join(' ');
+          const mapped = mapActionToInput(raw, getActionKind(queuedAction));
+          if (queuedAction.action === 'move' && queuedAction.dir) {
+            const dirMap = { north:'n', south:'s', east:'e', west:'w', up:'u', down:'d' };
+            const d = String(queuedAction.dir).toLowerCase();
+            mapped.player_intent.dir = dirMap[d] || d;
+          }
+          const result = await Engine.buildOutput(gameState, mapped);
+          allResponses.push(result);
+          if (result && result.state) {
+            gameState = result.state;
+            sessionStates.set(resolvedSessionId, { gameState, isFirstTurn });
+          }
+        }
+        engineOutput = allResponses[allResponses.length - 1];
+        debug = { ...debug, parser: "semantic", queue_length: validation.queue.length };
+      } else {
+        // Fallback to legacy parser
+        console.log('[PARSER] fallback_legacy input="%s"', userInput);
+        debug.parser = "legacy";
+        const parsed = Actions.parseIntent(action);
+        const inferredKind = (parsed && parsed.action === "move") ? "MOVE" : "FREEFORM";
+        inputObj = mapActionToInput(action, inferredKind);
+        if (parsed && parsed.action === "move" && parsed.dir) {
+          inputObj.player_intent.dir = parsed.dir;
+        }
+      }
+
+      if (!engineOutput) {
+        engineOutput = Engine.buildOutput(gameState, inputObj);
+      }
+      
+      if (engineOutput && engineOutput.state) {
+        gameState = engineOutput.state;
+        sessionStates.set(resolvedSessionId, { gameState, isFirstTurn });
+      }
+    } catch (err) {
+      console.error('Engine error:', err.message);
+      return res.json({ 
+        sessionId: resolvedSessionId,
+        error: `engine_failed: ${err.message}`, 
+        narrative: "The engine encountered an error processing your action.",
         state: gameState,
         debug
       });
     }
-
-    let inputObj = null;
-
-    if (parseResult && parseResult.success === true && typeof parseResult.confidence === 'number' && parseResult.confidence >= 0.5) {
-      console.log('[PARSER] semantic_ok input="%s" action="%s" confidence=%s', userInput, parseResult.intent?.primaryAction?.action, parseResult.confidence);
-      debug.parser = "semantic";
-      // Phase 4: validate queue and execute sequentially
-      const validation = validateAndQueueIntent(gameState, parseResult.intent);
-      if (!validation.valid) {
-        return res.json({
-          success: true,
-          narrative: `Action invalid: ${validation.reason}`,
-          state: gameState,
-          debug: { ...debug, parser: "semantic", error: "INVALID_ACTION", reason: validation.reason, validation: validation.stateValidation }
-        });
-      }
-      const allResponses = [];
-      for (const queuedAction of validation.queue) {
-        const raw = [queuedAction.action, queuedAction.target].filter(Boolean).join(' ');
-        const mapped = mapActionToInput(raw, getActionKind(queuedAction));
-        if (queuedAction.action === 'move' && queuedAction.dir) {
-          const dirMap = { north:'n', south:'s', east:'e', west:'w', up:'u', down:'d' };
-          const d = String(queuedAction.dir).toLowerCase();
-          mapped.player_intent.dir = dirMap[d] || d;
-        }
-        const result = await Engine.buildOutput(gameState, mapped);
-        allResponses.push(result);
-        if (result && result.state) gameState = result.state;
-      }
-      engineOutput = allResponses[allResponses.length - 1];
-      debug = { ...debug, parser: "semantic", queue_length: validation.queue.length };
-    } else {
-      // Fallback to legacy parser
-      console.log('[PARSER] fallback_legacy input="%s"', userInput);
-      debug.parser = "legacy";
-      const parsed = Actions.parseIntent(action);
-      const inferredKind = (parsed && parsed.action === "move") ? "MOVE" : "FREEFORM";
-      inputObj = mapActionToInput(action, inferredKind);
-      if (parsed && parsed.action === "move" && parsed.dir) {
-        inputObj.player_intent.dir = parsed.dir;
-      }
-    }
-
-    engineOutput = Engine.buildOutput(gameState, inputObj);
-    if (engineOutput && engineOutput.state) {
-      gameState = engineOutput.state;
-    }
-  } catch (err) {
-    console.error('Engine error:', err.message);
-    return res.json({ 
-      error: `engine_failed: ${err.message}`, 
-      narrative: "The engine encountered an error processing your action.",
-      state: gameState,
-      debug
-    });
   }
-}
-
-// --- Scene: current cell + nearby cells (N,S,E,W) ---
+  // --- Scene: current cell + nearby cells (N,S,E,W) ---
   const pos = gameState?.world?.position || {};
   const l1w = (gameState?.world?.l1_default?.w) || 12;
   const l1h = (gameState?.world?.l1_default?.h) || 12;
@@ -230,9 +287,9 @@ app.post('/narrate', async (req, res) => {
 
   const curKey = cellKey(pos.mx, pos.my, pos.lx, pos.ly);
   const cellsMap = (gameState?.world?.cells) || {};
-if (!cellsMap[curKey]) {
-  console.warn(`[DEBUG] Cell key mismatch: looking for ${curKey}, cells available:`, Object.keys(cellsMap).slice(0, 5));
-}
+  if (!cellsMap[curKey]) {
+    console.warn(`[DEBUG] Cell key mismatch: looking for ${curKey}, cells available:`, Object.keys(cellsMap).slice(0, 5));
+  }
   const curCellRaw = cellsMap[curKey];
 
   const currentCell = {
@@ -280,87 +337,16 @@ if (!cellsMap[curKey]) {
 
   if (!process.env.DEEPSEEK_API_KEY) {
     return res.json({ 
+      sessionId: resolvedSessionId,
       error: 'DEEPSEEK_API_KEY not set',
-      narrative: "The engine processes your action.",
-      state: gameState,
-      engine_output: engineOutput,
-      scene
-    , debug} );
-  }
-  console.log('[narrate] scene:', JSON.stringify(scene, null, 2));
-
-  try {
-    const response = await axios.post('https://api.deepseek.com/v1/chat/completions', {
-      model: 'deepseek-chat',
-      messages: [{
-        role: 'user',
-        content: `You are narrating an interactive roguelike game driven by a procedural engine.
-- Translate engine output (terrain types, cell descriptions, entity lists) into vivid, coherent prose
-- Maintain environmental consistency: terrain types define what the player can see and interact with
-- Build narrative tension through descriptions of current terrain and environmental features
-- React to player action by describing immediate sensory consequences within the game world
-
-CURRENT LOCATION:
-${scene.currentCell.description}
-(Terrain: ${scene.currentCell.type}/${scene.currentCell.subtype})
-
-ADJACENT AREAS:
-North: ${scene.nearbyCells.find(c => c.dir === 'North')?.description || 'Unknown'}
-South: ${scene.nearbyCells.find(c => c.dir === 'South')?.description || 'Unknown'}
-East: ${scene.nearbyCells.find(c => c.dir === 'East')?.description || 'Unknown'}
-West: ${scene.nearbyCells.find(c => c.dir === 'West')?.description || 'Unknown'}
-
-INVENTORY: ${JSON.stringify(scene.inventory)}
-NPCs PRESENT: ${scene.npcs && scene.npcs.length > 0 ? JSON.stringify(scene.npcs) : 'None'}
-
-Player action: "${action}"
-
-CONSTRAINTS:
-- If the player input is in parentheses (OOC), break character immediately and answer their technical question directly
-- Narrate ONLY what the player can see based on current location and adjacent areas
-- Do NOT invent dungeons, doors, or architecture not mentioned above
-- Do NOT reference locations you weren't provided
-- Write a full paragraph of immersive description
-
-DEBUG_FOOTER:
-At the end of your narration, append this metadata block:
----DEBUG---
-current_cell: ${scene.currentCell.type}/${scene.currentCell.subtype}
-cell_description: ${scene.currentCell.description.substring(0, 50)}...
-adjacent_cells: [${scene.nearbyCells.map(c => c.dir + ':' + c.type).join(', ')}]
-npcs_count: ${scene.npcs.length}
-inventory_count: ${scene.inventory.length}
----END_DEBUG---`
-      }],
-      temperature: 0.7
-    }, {
-      headers: {
-        'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    const narrative = response.data.choices[0].message.content;
-    return res.json({ narrative, state: gameState, engine_output: engineOutput, scene , debug} );
-  } catch (err) {
-    console.error('DeepSeek error:', err.message);
-    return res.json({ 
       narrative: "The engine processes your action.",
       state: gameState,
       engine_output: engineOutput,
       scene,
-      error: err.message
-    , debug} );
-  }
-    if (!process.env.DEEPSEEK_API_KEY) {
-    return res.json({ 
-      error: 'DEEPSEEK_API_KEY not set',
-      narrative: "The engine processes your action.",
-      state: gameState,
-      engine_output: engineOutput,
-      scene
+      debug
     });
   }
+
   console.log('[narrate] scene:', JSON.stringify(scene, null, 2));
 
   try {
@@ -415,10 +401,18 @@ inventory_count: ${scene.inventory.length}
     });
 
     const narrative = response.data.choices[0].message.content;
-    return res.json({ narrative, state: gameState, engine_output: engineOutput, scene, debug });
+    return res.json({ 
+      sessionId: resolvedSessionId,
+      narrative, 
+      state: gameState, 
+      engine_output: engineOutput, 
+      scene, 
+      debug 
+    });
   } catch (err) {
     console.error('DeepSeek error:', err.message);
     return res.json({ 
+      sessionId: resolvedSessionId,
       narrative: "The engine processes your action.",
       state: gameState,
       engine_output: engineOutput,
@@ -430,7 +424,10 @@ inventory_count: ${scene.inventory.length}
 });
 
 app.get('/status', (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  const { sessionId: resolvedSessionId, gameState, isFirstTurn } = getSessionState(sessionId);
   return res.json({
+    sessionId: resolvedSessionId,
     status: 'running',
     hasGameState: gameState !== null,
     isFirstTurn: isFirstTurn,
@@ -439,6 +436,5 @@ app.get('/status', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}
-`);
+  console.log(`Server running on port ${PORT}`);
 });
