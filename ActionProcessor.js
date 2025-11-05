@@ -250,5 +250,13 @@ function validateAndQueueIntent(state, normalizedIntent){
 module.exports = {
   validateAndQueueIntent,
   parseIntent,
-  applyPlayerActions
+  applyPlayerActions,
+  computeInventoryDigestHex,
+  resolveItemByName,
+  isValidDir,
+  getCellEntities,
+  findByNameCaseInsensitive,
+  resolveCellItemByName,
+  hasInventoryItem,
+  isNPCPresent
 };
