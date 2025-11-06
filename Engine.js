@@ -1,5 +1,3 @@
-[file name]: Engine.js
-[file content begin]
 // Engine.js — orchestrator; preserves v118 behavior byte-for-byte on state
 // PHASE 3C: Quest System Integration
 const readline = require('readline');
