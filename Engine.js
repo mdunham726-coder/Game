@@ -266,7 +266,7 @@ function buildOutput(prevState, inputObj) {
   // Actions.tickMerchantsAndFactions(state, nowUTC, changes1, phaseFlags);
 
   // Parse & apply player actions (non-movement)
-  const actions = Actions.parseIntent(inputObj ? inputObj["player_intent"] : "") || { action:'noop' };
+  const actions = Actions.parseIntent(inputObj?.player_intent?.raw ?? inputObj?.player_intent ?? "") || { action:'noop' };
   Actions.applyPlayerActions(state, actions, changes1, phaseFlags);
 
   // WorldGen step (movement + streaming + site reveal)
