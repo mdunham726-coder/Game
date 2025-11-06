@@ -441,7 +441,8 @@ function enterL2FromL1(state, l1_cell_data) {
     console.log(`[ENGINE] Reusing persistent settlement: ${settlement.name} with ${npcs_here.length} NPCs`);
   } else {
     // Generate new settlement with persistent NPCs
-    npcs_here = WorldGen.generateL2NPCs(l2_id, subtype);
+    const NPCs = require('./NPCs');
+    npcs_here = WorldGen.generateL2NPCs(l2_id, subtype, state.rng_seed, NPCs);
     
     // PHASE 3C: Assign quest-giver flags deterministically
     assignQuestGiverFlags(npcs_here, state.rng_seed, l2_id);
