@@ -239,95 +239,257 @@ async function listSavesData(sessionId) {
   }
 }
 // =============================================================================
-// REFACTORED API ENDPOINTS (Using Utility Functions)
+// PHASE 3C: QUEST SYSTEM API ENDPOINTS
 // =============================================================================
 
-// ENDPOINT 1: POST /api/save
-app.post('/api/save', async (req, res) => {
+// GET /quest/available - Get available quests for a settlement
+app.get('/quest/available', (req, res) => {
   const sessionId = req.headers['x-session-id'];
-  const { saveName, gameState } = req.body;
+  const { settlementId } = req.query;
   
-  const result = await performSave(sessionId, saveName, gameState);
+  if (!sessionId) {
+    return res.status(400).json({ error: 'MISSING_SESSION_ID', message: 'Session ID is required' });
+  }
   
-  if (result.success) {
-    return res.json(result);
-  } else {
-    return res.status(400).json(result);
+  if (!settlementId) {
+    return res.status(400).json({ error: 'MISSING_SETTLEMENT_ID', message: 'Settlement ID is required' });
+  }
+  
+  const { gameState } = getSessionState(sessionId);
+  
+  try {
+    // Check if quests exist for this settlement
+    const availableQuests = gameState.quests.allQuestsSeeded[settlementId] || [];
+    
+    // Filter out quests that are already active or completed
+    const activeQuestIds = new Set(gameState.quests.active.map(q => q.id));
+    const completedQuestIds = new Set(gameState.quests.completed.map(q => q.id));
+    
+    const filteredQuests = availableQuests.filter(quest => 
+      !activeQuestIds.has(quest.id) && !completedQuestIds.has(quest.id)
+    );
+    
+    return res.json({
+      success: true,
+      settlementId,
+      availableQuests: filteredQuests,
+      count: filteredQuests.length
+    });
+    
+  } catch (error) {
+    console.error('[QUEST] Error getting available quests:', error);
+    return res.status(500).json({ 
+      error: 'QUEST_SYSTEM_ERROR', 
+      message: 'Failed to retrieve available quests' 
+    });
   }
 });
 
-// ENDPOINT 2: POST /api/load
-app.post('/api/load', async (req, res) => {
+// POST /quest/accept - Accept a quest
+app.post('/quest/accept', (req, res) => {
   const sessionId = req.headers['x-session-id'];
-  const { saveName } = req.body;
+  const { questId, settlementId } = req.body;
   
-  const result = await performLoad(sessionId, saveName);
-  
-  if (result.success) {
-    // Update session state with loaded game state
-    sessionStates.set(sessionId, {
-      gameState: result.gameState,
-      isFirstTurn: false
-    });
-    
-    return res.json({ 
-      success: true, 
-      gameState: result.gameState,
-      sessionId: sessionId,
-      message: result.message
-    });
-  } else {
-    return res.status(result.error === 'SAVE_NOT_FOUND' ? 404 : 400).json(result);
+  if (!sessionId) {
+    return res.status(400).json({ error: 'MISSING_SESSION_ID', message: 'Session ID is required' });
   }
-});
-
-// ENDPOINT 3: GET /api/newsave
-app.get('/api/newsave', (req, res) => {
-  const sessionId = req.headers['x-session-id'];
   
-  const result = performNewGame(sessionId);
+  if (!questId) {
+    return res.status(400).json({ error: 'MISSING_QUEST_ID', message: 'Quest ID is required' });
+  }
   
-  if (result.success) {
-    let resolvedSessionId = sessionId;
-    
-    if (sessionId && sessionStates.has(sessionId)) {
-      // Reset existing session
-      sessionStates.set(sessionId, {
-        gameState: result.gameState,
-        isFirstTurn: true
-      });
-    } else {
-      // Create new session
-      resolvedSessionId = generateSessionId();
-      sessionStates.set(resolvedSessionId, {
-        gameState: result.gameState,
-        isFirstTurn: true
+  const sessionState = getSessionState(sessionId);
+  let { gameState } = sessionState;
+  
+  try {
+    // Validate quest acceptance
+    const validation = Engine.validateQuestAcceptance(gameState, questId);
+    if (!validation.valid) {
+      const status = validation.status || 400;
+      return res.status(status).json({ 
+        error: validation.error, 
+        message: getQuestErrorMessage(validation.error) 
       });
     }
     
-    return res.json({ 
-      success: true, 
-      gameState: result.gameState,
-      sessionId: resolvedSessionId,
-      message: result.message
+    // Accept the quest
+    const quest = { ...validation.quest };
+    quest.status = 'accepted';
+    quest.turn_accepted = gameState.turn_counter;
+    quest.current_step = 0;
+    
+    gameState.quests.active.push(quest);
+    
+    // Update session state
+    sessionStates.set(sessionId, { ...sessionState, gameState });
+    
+    return res.json({
+      success: true,
+      message: `Quest accepted: ${quest.title}`,
+      quest: quest
     });
-  } else {
-    return res.status(500).json(result);
+    
+  } catch (error) {
+    console.error('[QUEST] Error accepting quest:', error);
+    return res.status(500).json({ 
+      error: 'QUEST_ACCEPT_FAILED', 
+      message: 'Failed to accept quest' 
+    });
   }
 });
 
-// Bonus endpoint: GET /api/saves - List all saves for a session
-app.get('/api/saves', async (req, res) => {
+// POST /quest/progress - Advance quest progress
+app.post('/quest/progress', (req, res) => {
   const sessionId = req.headers['x-session-id'];
+  const { questId, step } = req.body;
   
-  const result = await listSavesData(sessionId);
+  if (!sessionId) {
+    return res.status(400).json({ error: 'MISSING_SESSION_ID', message: 'Session ID is required' });
+  }
   
-  if (result.success) {
-    return res.json(result);
-  } else {
-    return res.status(400).json(result);
+  if (!questId) {
+    return res.status(400).json({ error: 'MISSING_QUEST_ID', message: 'Quest ID is required' });
+  }
+  
+  const sessionState = getSessionState(sessionId);
+  let { gameState } = sessionState;
+  
+  try {
+    // Find the active quest
+    const questIndex = gameState.quests.active.findIndex(q => q.id === questId);
+    if (questIndex === -1) {
+      return res.status(404).json({ 
+        error: 'QUEST_NOT_FOUND', 
+        message: 'Quest not found in active quests' 
+      });
+    }
+    
+    const quest = gameState.quests.active[questIndex];
+    
+    // Update progress
+    if (step !== undefined) {
+      quest.current_step = Math.min(step, quest.total_steps);
+    } else {
+      quest.current_step = Math.min(quest.current_step + 1, quest.total_steps);
+    }
+    
+    quest.status = quest.current_step === quest.total_steps ? 'ready_to_complete' : 'in_progress';
+    
+    // Update session state
+    sessionStates.set(sessionId, { ...sessionState, gameState });
+    
+    return res.json({
+      success: true,
+      message: `Quest progress updated: ${quest.current_step}/${quest.total_steps}`,
+      quest: quest
+    });
+    
+  } catch (error) {
+    console.error('[QUEST] Error updating quest progress:', error);
+    return res.status(500).json({ 
+      error: 'QUEST_PROGRESS_FAILED', 
+      message: 'Failed to update quest progress' 
+    });
   }
 });
+
+// POST /quest/complete - Complete a quest and claim rewards
+app.post('/quest/complete', (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  const { questId } = req.body;
+  
+  if (!sessionId) {
+    return res.status(400).json({ error: 'MISSING_SESSION_ID', message: 'Session ID is required' });
+  }
+  
+  if (!questId) {
+    return res.status(400).json({ error: 'MISSING_QUEST_ID', message: 'Quest ID is required' });
+  }
+  
+  const sessionState = getSessionState(sessionId);
+  let { gameState } = sessionState;
+  
+  try {
+    // Validate quest completion
+    const validation = Engine.validateQuestCompletion(gameState, questId);
+    if (!validation.valid) {
+      const status = validation.status || 400;
+      return res.status(status).json({ 
+        error: validation.error, 
+        message: getQuestErrorMessage(validation.error) 
+      });
+    }
+    
+    const quest = validation.quest;
+    const questIndex = gameState.quests.active.findIndex(q => q.id === questId);
+    
+    // Apply rewards
+    gameState = Engine.applyQuestReward(gameState, quest);
+    
+    // Move quest to completed
+    quest.status = 'completed';
+    quest.turn_completed = gameState.turn_counter;
+    
+    gameState.quests.active.splice(questIndex, 1);
+    gameState.quests.completed.push(quest);
+    
+    // Update session state
+    sessionStates.set(sessionId, { ...sessionState, gameState });
+    
+    return res.json({
+      success: true,
+      message: `Quest completed! Received ${quest.reward_gold} gold.`,
+      reward: quest.reward_gold,
+      quest: quest
+    });
+    
+  } catch (error) {
+    console.error('[QUEST] Error completing quest:', error);
+    return res.status(500).json({ 
+      error: 'QUEST_COMPLETE_FAILED', 
+      message: 'Failed to complete quest' 
+    });
+  }
+});
+
+// GET /quest/active - Get player's active quests
+app.get('/quest/active', (req, res) => {
+  const sessionId = req.headers['x-session-id'];
+  
+  if (!sessionId) {
+    return res.status(400).json({ error: 'MISSING_SESSION_ID', message: 'Session ID is required' });
+  }
+  
+  const { gameState } = getSessionState(sessionId);
+  
+  try {
+    return res.json({
+      success: true,
+      activeQuests: gameState.quests.active,
+      count: gameState.quests.active.length,
+      maxActiveQuests: gameState.quests.config.maxActiveQuests
+    });
+    
+  } catch (error) {
+    console.error('[QUEST] Error getting active quests:', error);
+    return res.status(500).json({ 
+      error: 'QUEST_LIST_FAILED', 
+      message: 'Failed to retrieve active quests' 
+    });
+  }
+});
+
+// Helper function for quest error messages
+function getQuestErrorMessage(errorCode) {
+  const messages = {
+    'ACTIVE_QUEST_LIMIT': 'Maximum 10 active quests reached. Complete some quests first.',
+    'QUEST_NOT_FOUND': 'Quest not found or no longer available.',
+    'QUEST_ALREADY_ACTIVE': 'You have already accepted this quest.',
+    'INCOMPLETE_QUEST': 'Quest is not yet complete. Finish all objectives first.'
+  };
+  
+  return messages[errorCode] || 'An unknown quest error occurred.';
+}
 // =============================================================================
 // SYSTEM COMMAND DETECTION FUNCTION
 // =============================================================================
@@ -435,6 +597,22 @@ async function detectSystemCommand(input, sessionId, currentGameState, sessionSt
         newState: currentGameState
       };
     }
+  }
+  
+  // PHASE 3C: Quest Commands
+  const questCommands = {
+    'quests': 'list_quests',
+    'my quests': 'list_quests', 
+    'show quests': 'list_quests',
+    'active quests': 'list_quests'
+  };
+  
+  if (questCommands[userInput]) {
+    return {
+      isSystemCommand: true,
+      message: "Use the quest menu or '/quest/active' endpoint to view your quests.",
+      newState: currentGameState
+    };
   }
   
   // Not a system command

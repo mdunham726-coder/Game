@@ -2,6 +2,7 @@
 /**
  * SemanticParser.js
  * Phase 1 — LLM-driven user intent normalization
+ * Phase 3C — Quest action parsing support
  * Exports: async function normalizeUserIntent(userInput, gameContext)
  */
 
@@ -66,9 +67,17 @@ function buildPrompt(userInput, contextStr) {
   const USER_TEXT = [
     contextStr,
     "",
-    "Valid actions: move, take, drop, examine, talk, sit, stand, look, cast, sneak, attack, listen, wait, inventory, help",
+    // === PHASE 3C: Quest actions added to valid actions list ===
+    "Valid actions: move, take, drop, examine, talk, accept_quest, complete_quest, ask_about_quest, sit, stand, look, cast, sneak, attack, listen, wait, inventory, help",
     "",
     "Directions: north, south, east, west, up, down",
+    "",
+    // === PHASE 3C: Quest-specific parsing context ===
+    "Quest actions:",
+    "- accept_quest: Player accepts quest from NPC (e.g., 'accept quest from guard', 'take the quest', 'yes I'll help')",
+    "- complete_quest: Player completes quest with NPC (e.g., 'complete quest with guard', 'turn in quest', 'report back')",
+    "- ask_about_quest: Player inquires about quest from NPC (e.g., 'ask guard about quest', 'what quests do you have', 'any work available')",
+    "For quest actions, 'target' should be the NPC name/identifier.",
     "",
     "Modifiers: carefully, sneakily, gently, forcefully, angrily, etc.",
     "",

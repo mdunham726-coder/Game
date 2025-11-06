@@ -108,6 +108,12 @@ function applyPlayerActions(state, actions, deltas, flags){
     return;
   }
   if (act === 'look'){ return; }
+  
+  // === PHASE 3C: Quest action execution ===
+  if (['accept_quest', 'complete_quest'].includes(act)){
+    updateNPCQuestState(actions, state, deltas, flags);
+    return;
+  }
 }
 
 function computeInventoryDigestHex(state){
@@ -119,6 +125,186 @@ function computeInventoryDigestHex(state){
     return line;
   }).sort().join('\n');
   return sha256Hex(rows);
+}
+
+// === PHASE 3C: Settlement NPC lookup (persistent NPCs, not current cell) ===
+function getNPCInSettlement(state, settlementId, npcId){
+  const settlement = ((state?.world?.settlements)||{})[settlementId];
+  if (!settlement || !Array.isArray(settlement.npcs)) return null;
+  return settlement.npcs.find(n => n?.id === npcId) || null;
+}
+
+// === PHASE 3C: Quest action validation (no state mutation) ===
+function validateQuestAction(action, targetNPC, state){
+  const act = String(action?.action||'').toLowerCase();
+  const npcId = action?.target; // NPC ID from normalized intent
+  const questId = action?.questId; // Optional quest ID for complete_quest
+  
+  if (!npcId){
+    return { valid: false, error: 'NO_NPC_TARGET', newState: null };
+  }
+
+  // Extract settlementId from NPC ID pattern: npc_${settlementId}_${index}
+  const match = String(npcId).match(/^npc_([^_]+)_\d+$/);
+  if (!match){
+    return { valid: false, error: 'INVALID_NPC_ID_FORMAT', newState: null };
+  }
+  const settlementId = match[1];
+  
+  const npc = getNPCInSettlement(state, settlementId, npcId);
+  if (!npc){
+    return { valid: false, error: 'NPC_NOT_FOUND', newState: null };
+  }
+
+  // Check if NPC is a quest-giver
+  if (typeof npc.quest_giver_rank !== 'number' || npc.quest_giver_rank <= 0){
+    return { valid: false, error: 'NPC_NOT_QUEST_GIVER', newState: null };
+  }
+
+  const questState = (state?.quests) || { allQuestsSeeded: {}, active: [], completed: [], config: {} };
+  
+  if (act === 'accept_quest'){
+    // Check: Quest available for this NPC
+    const available = (questState.allQuestsSeeded[settlementId] || []).find(q => q.giver_npc_id === npcId);
+    if (!available){
+      return { valid: false, error: 'NO_QUEST_AVAILABLE', newState: null };
+    }
+    
+    // Check: Not already active
+    const alreadyActive = questState.active.some(q => q.id === available.id);
+    if (alreadyActive){
+      return { valid: false, error: 'QUEST_ALREADY_ACTIVE', newState: null };
+    }
+    
+    // Check: Not already completed
+    const alreadyCompleted = questState.completed.some(q => q.id === available.id);
+    if (alreadyCompleted){
+      return { valid: false, error: 'QUEST_ALREADY_COMPLETED', newState: null };
+    }
+    
+    // Check: Max active quests limit
+    const maxActive = questState.config?.maxActiveQuests || 10;
+    if (questState.active.length >= maxActive){
+      return { valid: false, error: 'MAX_ACTIVE_QUESTS_REACHED', newState: null };
+    }
+    
+    return { valid: true, error: null, newState: { settlementId, questId: available.id, npc } };
+  }
+  
+  if (act === 'complete_quest'){
+    if (!questId){
+      return { valid: false, error: 'NO_QUEST_ID', newState: null };
+    }
+    
+    // Check: Quest is active
+    const activeQuest = questState.active.find(q => q.id === questId);
+    if (!activeQuest){
+      return { valid: false, error: 'QUEST_NOT_ACTIVE', newState: null };
+    }
+    
+    // Check: Quest is assigned to this NPC
+    if (activeQuest.giver_npc_id !== npcId){
+      return { valid: false, error: 'WRONG_QUEST_GIVER', newState: null };
+    }
+    
+    // Check: Quest objectives completed (stub - assumes complete for now)
+    // TODO: Implement objective validation when quest objective system is built
+    
+    return { valid: true, error: null, newState: { settlementId, questId, npc, activeQuest } };
+  }
+  
+  if (act === 'ask_about_quest'){
+    // Always valid if NPC is a quest-giver (no state constraints)
+    return { valid: true, error: null, newState: { settlementId, npc } };
+  }
+  
+  return { valid: false, error: 'UNKNOWN_QUEST_ACTION', newState: null };
+}
+
+// === PHASE 3C: NPC quest state persistence ===
+function updateNPCQuestState(action, state, deltas, flags){
+  const act = String(action?.action||'').toLowerCase();
+  const validation = validateQuestAction(action, null, state);
+  
+  if (!validation.valid){
+    console.log(`[QUEST] updateNPCQuestState failed: ${validation.error}`);
+    return;
+  }
+  
+  const { settlementId, questId, npc, activeQuest } = validation.newState;
+  const settlement = state.world.settlements[settlementId];
+  
+  if (!settlement){
+    console.log(`[QUEST] Settlement ${settlementId} not found`);
+    return;
+  }
+  
+  if (act === 'accept_quest'){
+    // Add quest to active list
+    const questState = state.quests || { allQuestsSeeded: {}, active: [], completed: [], config: {} };
+    const questToAccept = (questState.allQuestsSeeded[settlementId] || []).find(q => q.id === questId);
+    
+    if (questToAccept){
+      questState.active.push({
+        ...questToAccept,
+        accepted_at: new Date().toISOString(),
+        status: 'active'
+      });
+      
+      deltas.push({
+        op: 'set',
+        path: '/quests/active',
+        value: questState.active
+      });
+      
+      console.log(`[QUEST] Accepted quest ${questId} from NPC ${npc.id}`);
+      flags.quest_accepted = true;
+    }
+  }
+  
+  if (act === 'complete_quest'){
+    // Move quest from active to completed
+    const questState = state.quests;
+    const activeIdx = questState.active.findIndex(q => q.id === questId);
+    
+    if (activeIdx >= 0){
+      const completedQuest = {
+        ...questState.active[activeIdx],
+        completed_at: new Date().toISOString(),
+        status: 'completed'
+      };
+      
+      questState.active.splice(activeIdx, 1);
+      questState.completed.push(completedQuest);
+      
+      deltas.push({
+        op: 'set',
+        path: '/quests/active',
+        value: questState.active
+      });
+      
+      deltas.push({
+        op: 'set',
+        path: '/quests/completed',
+        value: questState.completed
+      });
+      
+      // Decrement NPC quest_giver_rank
+      const npcIdx = settlement.npcs.findIndex(n => n.id === npc.id);
+      if (npcIdx >= 0 && settlement.npcs[npcIdx].quest_giver_rank > 0){
+        settlement.npcs[npcIdx].quest_giver_rank -= 1;
+        
+        deltas.push({
+          op: 'set',
+          path: `/world/settlements/${settlementId}/npcs`,
+          value: settlement.npcs
+        });
+        
+        console.log(`[QUEST] Completed quest ${questId}, NPC ${npc.id} rank: ${settlement.npcs[npcIdx].quest_giver_rank}`);
+        flags.quest_completed = true;
+      }
+    }
+  }
 }
 
 // === Phase 3: Validation for pre-normalized intents (no state mutation) ===
@@ -236,6 +422,16 @@ function validateAndQueueIntent(state, normalizedIntent){
       continue;
     }
 
+    // === PHASE 3C: Quest action validation ===
+    if (['accept_quest', 'complete_quest', 'ask_about_quest'].includes(action)){
+      const questValidation = validateQuestAction(act, null, state);
+      sv.questValidation = questValidation;
+      if (!questValidation.valid){
+        return { valid:false, queue:[], reason:questValidation.error, stateValidation:sv };
+      }
+      continue;
+    }
+
     // Lightweight checks / always-allow group
     if (['sit','stand','wait','listen','look','inventory','help'].includes(action)){
       continue;
@@ -273,5 +469,9 @@ module.exports = {
   levenshtein,
   parseISO,
   toISO,
-  sha256Hex
+  sha256Hex,
+  // === PHASE 3C: Quest system exports ===
+  getNPCInSettlement,
+  validateQuestAction,
+  updateNPCQuestState
 };

@@ -1,8 +1,12 @@
+[file name]: Engine.js
+[file content begin]
 // Engine.js — orchestrator; preserves v118 behavior byte-for-byte on state
+// PHASE 3C: Quest System Integration
 const readline = require('readline');
 const crypto = require('crypto');
 const WorldGen = require('./WorldGen');
 const Actions = require('./ActionProcessor');
+const { QuestSystem } = require('./QuestSystem');
 
 // Shared defaults must match modules
 const DEFAULTS = {
@@ -72,6 +76,7 @@ function stateFingerprintFullHex(state) {
   return crypto.createHash('sha256').update(s,'utf8').digest('hex');
 }
 
+// PHASE 3C: Quest System Initialization
 function initState(timestampUTC) {
   const l1w = DEFAULTS.L1_SIZE.w, l1h = DEFAULTS.L1_SIZE.h;
   return {
@@ -86,6 +91,7 @@ function initState(timestampUTC) {
       stream: { R: DEFAULTS.STREAM.R, P: DEFAULTS.STREAM.P },
       macro: {}, cells: {}, sites: {},
       merchants: [], factions: [], npcs: [],
+      settlements: {}, // PHASE 3C: Persistent settlement storage
       position: { mx: 0, my: 0, lx: Math.floor(l1w/2), ly: Math.floor(l1h/2) }
     },
     ledger: { promotions: [] },
@@ -98,9 +104,152 @@ function initState(timestampUTC) {
       hex_digest_state: ""
     },
     digests: { inventory_digest: "" },
-    quests: [], reputation: {},
+    // PHASE 3C: Quest System State Schema
+    quests: {
+      active: [],           // MAX 10 ENFORCED
+      completed: [],
+      allQuestsSeeded: {},  // settlementId → [quests]
+      config: {
+        maxActiveQuests: 10,
+        maxQuestsPerSettlement: 5
+      }
+    },
+    reputation: {},
     history: []
   };
+}
+
+// PHASE 3C: Seeded RNG for deterministic NPC assignments
+function createSeededRNG(seed) {
+  let state = crypto.createHash('sha256').update(String(seed)).digest('hex');
+  let callCount = 0;
+  
+  return function() {
+    callCount++;
+    state = crypto.createHash('sha256')
+      .update(state + callCount)
+      .digest('hex');
+    return parseInt(state.substring(0, 8), 16) / 0xFFFFFFFF;
+  };
+}
+
+// PHASE 3C: Quest-Giver NPC Assignment
+function assignQuestGiverFlags(npcArray, worldSeed, settlementId) {
+  const rng = createSeededRNG(worldSeed + settlementId);
+  const population = npcArray.length;
+  const baseProbability = Math.max(0.10, 150 / population);
+  const maxQuestGivers = Math.ceil(population * 0.30);
+  
+  let questGiverCount = 0;
+  npcArray.forEach(npc => {
+    if (questGiverCount < maxQuestGivers && rng() < baseProbability) {
+      npc.can_give_quests = true;
+      questGiverCount++;
+    } else {
+      npc.can_give_quests = false;
+    }
+  });
+}
+
+// PHASE 3C: Settlement Quest Generation
+function generateSettlementQuests(state, settlementId, settlementData, npcArray) {
+  if (!state.questSystem) {
+    state.questSystem = new QuestSystem(state.rng_seed);
+    state.questSystem.initialize();
+  }
+  
+  const questSeed = state.rng_seed + settlementId + "quests";
+  const constraints = {
+    settlementType: settlementData.type,
+    playerLevel: state.player.level || 1,
+    availableNPCs: npcArray,
+    currentThreats: settlementData.threats || [],
+    seed: questSeed
+  };
+
+  try {
+    const quests = state.questSystem.generateSettlementQuests(constraints);
+    
+    // Assign quests to quest-giver NPCs
+    const questGivers = npcArray.filter(npc => npc.can_give_quests);
+    quests.forEach(quest => {
+      if (questGivers.length > 0) {
+        const rng = createSeededRNG(questSeed + quest.id);
+        const giverNpc = questGivers[Math.floor(rng() * questGivers.length)];
+        quest.giver_npc_id = giverNpc.id;
+        quest.giver_name = giverNpc.name;
+      } else {
+        quest.giver_npc_id = null;
+        quest.giver_name = "Local Resident";
+      }
+      
+      // Add settlement metadata
+      quest.settlementId = settlementId;
+      quest.settlementName = settlementData.name;
+      quest.status = "available";
+      quest.current_step = 0;
+    });
+    
+    return quests.slice(0, state.quests.config.maxQuestsPerSettlement);
+  } catch (error) {
+    console.error('[ENGINE] Quest generation failed:', error);
+    return [];
+  }
+}
+// PHASE 3C: Quest Validation Functions
+function validateQuestAcceptance(state, questId) {
+  // Cap check
+  if (state.quests.active.length >= state.quests.config.maxActiveQuests) {
+    return { valid: false, error: "ACTIVE_QUEST_LIMIT" };
+  }
+  
+  // Quest existence check (search all settlements)
+  const quest = Object.values(state.quests.allQuestsSeeded)
+    .flat()
+    .find(q => q.id === questId);
+  
+  if (!quest) {
+    return { valid: false, error: "QUEST_NOT_FOUND", status: 404 };
+  }
+  
+  // Already active?
+  if (state.quests.active.find(q => q.id === questId)) {
+    return { valid: false, error: "QUEST_ALREADY_ACTIVE", status: 409 };
+  }
+  
+  return { valid: true, quest };
+}
+
+function validateQuestCompletion(state, questId) {
+  const quest = state.quests.active.find(q => q.id === questId);
+  if (!quest) {
+    return { valid: false, error: "QUEST_NOT_FOUND", status: 404 };
+  }
+  
+  if (quest.current_step !== quest.total_steps) {
+    return { valid: false, error: "INCOMPLETE_QUEST", status: 400 };
+  }
+  
+  return { valid: true, quest };
+}
+
+function applyQuestReward(state, quest) {
+  // Add gold to player inventory
+  if (!state.player.inventory) state.player.inventory = [];
+  
+  const goldItem = state.player.inventory.find(item => item.type === 'gold');
+  if (goldItem) {
+    goldItem.quantity = (goldItem.quantity || 0) + quest.reward_gold;
+  } else {
+    state.player.inventory.push({
+      id: 'gold_' + Date.now(),
+      type: 'gold',
+      name: 'Gold Coins',
+      quantity: quest.reward_gold
+    });
+  }
+  
+  return state;
 }
 
 function buildOutput(prevState, inputObj) {
@@ -154,7 +303,6 @@ function buildOutput(prevState, inputObj) {
       }
     }
   }
-
 
   // Digest inventory
   const invHex = Actions.computeInventoryDigestHex(state);
@@ -254,7 +402,6 @@ function buildOutput(prevState, inputObj) {
   blocks.push("[STATE-DELTA 2/2]\n" + JSON.stringify(delta2, null, 2));
   return { blocks, state };
 }
-
 // CLI harness (compatible with v118 workflow)
 function main() {
   const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -278,18 +425,44 @@ function main() {
 }
 if (require.main === module) main();
 
-
 /**
  * Enter an L2 location (settlement or POI) from an L1 cell.
+ * PHASE 3C: Enhanced with persistent NPCs and quest generation
  */
 function enterL2FromL1(state, l1_cell_data) {
   if (!state || !state.world || !l1_cell_data) return null;
   const { mx, my, lx, ly, type, subtype } = l1_cell_data;
   const l2_id = `M${mx}x${my}/L1_${lx}_${ly}_${subtype}`;
+  
+  // PHASE 3C: Check if settlement already exists with persistent NPCs
+  let settlement = state.world.settlements && state.world.settlements[l2_id];
   let npcs_here = [];
-  if (Array.isArray(state.world.npcs)) {
-    npcs_here = state.world.npcs.filter(n => n && (n.home_location === l2_id || n.site_id === l2_id));
+  
+  if (settlement) {
+    // Use existing persistent NPCs
+    npcs_here = settlement.npcs || [];
+    console.log(`[ENGINE] Reusing persistent settlement: ${settlement.name} with ${npcs_here.length} NPCs`);
+  } else {
+    // Generate new settlement with persistent NPCs
+    npcs_here = WorldGen.generateL2NPCs(l2_id, subtype);
+    
+    // PHASE 3C: Assign quest-giver flags deterministically
+    assignQuestGiverFlags(npcs_here, state.rng_seed, l2_id);
+    
+    settlement = WorldGen.generateL2Settlement(l2_id, subtype, npcs_here);
+    state.world.settlements = state.world.settlements || {};
+    state.world.settlements[l2_id] = settlement;
+    
+    console.log(`[ENGINE] Created new settlement: ${settlement.name} with ${npcs_here.length} NPCs`);
+    
+    // PHASE 3C: Generate quests for new settlement
+    if (!state.quests.allQuestsSeeded[l2_id]) {
+      const quests = generateSettlementQuests(state, l2_id, settlement, npcs_here);
+      state.quests.allQuestsSeeded[l2_id] = quests;
+      console.log(`[ENGINE] Generated ${quests.length} quests for ${settlement.name}`);
+    }
   }
+  
   let l2 = null;
   if (type === "settlement") {
     l2 = WorldGen.generateL2Settlement(l2_id, subtype, npcs_here);
@@ -299,6 +472,10 @@ function enterL2FromL1(state, l1_cell_data) {
     // fallback: treat as structure
     l2 = WorldGen.generateL2POI(l2_id, "structure");
   }
+  
+  // PHASE 3C: Ensure settlement data is preserved
+  l2.settlement_data = settlement;
+  
   state.world.l2_active = l2;
   state.world.l3_active = null;
   state.world.current_layer = 2;
@@ -347,4 +524,17 @@ function exitL3ToL2(state) {
   state.player.layer = 2;
 }
 
-module.exports = { buildOutput, initState, enterL2FromL1, enterL3FromL2, exitL2ToL1, exitL3ToL2 };
+// PHASE 3C: Export quest functions for use in index.js
+module.exports = { 
+  buildOutput, 
+  initState, 
+  enterL2FromL1, 
+  enterL3FromL2, 
+  exitL2ToL1, 
+  exitL3ToL2,
+  // Quest system exports
+  validateQuestAcceptance,
+  validateQuestCompletion,
+  applyQuestReward,
+  generateSettlementQuests
+};
