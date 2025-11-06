@@ -153,7 +153,6 @@ function assignQuestGiverFlags(npcArray, worldSeed, settlementId) {
 function generateSettlementQuests(state, settlementId, settlementData, npcArray) {
   if (!state.questSystem) {
     state.questSystem = new QuestSystem(state.rng_seed);
-    state.questSystem.initialize();
   }
   
   const questSeed = state.rng_seed + settlementId + "quests";
