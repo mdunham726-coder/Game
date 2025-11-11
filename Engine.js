@@ -273,7 +273,13 @@ function buildOutput(prevState, inputObj) {
   // Biome initialization if missing
   console.log('[ENGINE] Biome check - has biome?', !!state?.world?.macro_biome, 'has WORLD_PROMPT?', !!inputObj?.WORLD_PROMPT, 'prompt value:', inputObj?.WORLD_PROMPT);
   if (!state?.world?.macro_biome && inputObj?.WORLD_PROMPT) {
-    state = WorldGen.generateWorldFromDescription(state, inputObj.WORLD_PROMPT);
+    const worldData = WorldGen.generateWorldFromDescription(state, inputObj.WORLD_PROMPT);
+state.world.macro_biome = worldData.biome;
+state.world.macro_palette = worldData.palette;
+state.world.cells = worldData.cells;
+state.world.sites = worldData.sites;
+state.world.seed = worldData.seed;
+state.world.l0_size = worldData.l0_size;
   }
   const wg = WorldGen.worldGenStep(state, { actions });
   // deltas are already pushed by worldGenStep to changes1-equivalent; merge:
