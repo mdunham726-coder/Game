@@ -270,23 +270,25 @@ function buildOutput(prevState, inputObj) {
   Actions.applyPlayerActions(state, actions, changes1, phaseFlags);
 
   // WorldGen step (movement + streaming + site reveal)
-  // Biome initialization if missing
-  console.log('[ENGINE] Biome check - has biome?', !!state?.world?.macro_biome, 'has WORLD_PROMPT?', !!inputObj?.WORLD_PROMPT, 'prompt value:', inputObj?.WORLD_PROMPT);
-  if (!state?.world?.macro_biome && inputObj?.WORLD_PROMPT) {
-    const worldData = WorldGen.generateWorldFromDescription(state, inputObj.WORLD_PROMPT);
-state.world.macro_biome = worldData.biome;
-state.world.macro_palette = worldData.palette;
-state.world.cells = worldData.cells;
-state.world.sites = worldData.sites;
-state.world.seed = worldData.seed;
-state.world.l0_size = worldData.l0_size;
-  }
-  const wg = WorldGen.worldGenStep(state, { actions });
-  // deltas are already pushed by worldGenStep to changes1-equivalent; merge:
-  if (wg && Array.isArray(wg.deltas)) {
-    for (const d of wg.deltas) changes1.push(d);
-  }
-
+// Biome initialization if missing
+console.log('[ENGINE] Biome check - has biome?', !!state?.world?.macro_biome, 'has WORLD_PROMPT?', !!inputObj?.WORLD_PROMPT, 'prompt value:', inputObj?.WORLD_PROMPT);
+if (!state?.world?.macro_biome && inputObj?.WORLD_PROMPT) {
+  const worldData = WorldGen.generateWorldFromDescription(state, inputObj.WORLD_PROMPT);
+  // Don't replace state entirely - merge world data into existing state structure
+  if (!state.world) state.world = {};
+  state.world.macro_biome = worldData.biome;
+  state.world.macro_palette = worldData.palette;
+  state.world.seed = worldData.seed;
+  state.world.l0_size = worldData.l0_size;
+  state.world.macro_cells = worldData.cells;  // Store as macro_cells, NOT cells
+  if (!state.world.sites) state.world.sites = worldData.sites;
+}
+const wg = WorldGen.worldGenStep(state, { actions });
+// deltas are already pushed by worldGenStep to changes1-equivalent; merge:
+if (wg && Array.isArray(wg.deltas)) {
+  for (const d of wg.deltas) changes1.push(d);
+}
+  
   // L1 description pass: ensure each visible cell has a narrative description
   if (state && state.world && state.world.cells) {
     for (const id in state.world.cells) {
