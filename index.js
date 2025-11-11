@@ -46,7 +46,12 @@ function getSaveFilePath(sessionId, saveName) {
 
 async function ensureSaveDir(sessionId) {
   const savePath = getSavePath(sessionId);
-  await fs.mkdir(savePath, { recursive: true });
+  try {
+    await fs.mkdir(savePath, { recursive: true });
+  } catch (err) {
+    console.error(`Failed to create save directory: ${err.message}`);
+    throw err; // Re-throw to let caller handle
+  }
 }
 
 async function getSaveCount(sessionId) {
