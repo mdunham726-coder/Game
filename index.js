@@ -734,8 +734,6 @@ app.post('/narrate', async (req, res) => {
   } else {
     // Ongoing turn: infer MOVE vs FREEFORM and call Engine
     try {
-      if (!Engine.buildOutput) {
-      }
 
       // Clarify if low confidence (only for non-first-turn)
       if (parseResult && parseResult.success === true && typeof parseResult.confidence === 'number' && parseResult.confidence < 0.5) {
