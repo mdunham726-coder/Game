@@ -735,7 +735,6 @@ app.post('/narrate', async (req, res) => {
     // Ongoing turn: infer MOVE vs FREEFORM and call Engine
     try {
       if (!Engine.buildOutput) {
-        throw new Error('Engine.buildOutput is not a function');
       }
 
       // Clarify if low confidence (only for non-first-turn)
