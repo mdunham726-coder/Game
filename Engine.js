@@ -273,7 +273,7 @@ function buildOutput(prevState, inputObj) {
 // Biome initialization if missing
 console.log('[ENGINE] Biome check - has biome?', !!state?.world?.macro_biome, 'has WORLD_PROMPT?', !!inputObj?.WORLD_PROMPT, 'prompt value:', inputObj?.WORLD_PROMPT);
 if (!state?.world?.macro_biome && inputObj?.WORLD_PROMPT) {
-  const worldData = WorldGen.generateWorldFromDescription(state, inputObj.WORLD_PROMPT);
+  const worldData = WorldGen.generateWorldFromDescription(inputObj.WORLD_PROMPT, state.rng_seed || 0);
   if (!state.world) state.world = {};
   state.world.macro_biome = worldData.biome;
   state.world.macro_palette = worldData.palette;
@@ -283,9 +283,11 @@ if (!state?.world?.macro_biome && inputObj?.WORLD_PROMPT) {
   if (!state.world.sites) state.world.sites = worldData.sites;
 }
 const wg = WorldGen.worldGenStep(state.world, { actions });
-// deltas are already pushed by worldGenStep to changes1-equivalent; merge:
 if (wg && Array.isArray(wg.deltas)) {
   for (const d of wg.deltas) changes1.push(d);
+}
+if (wg) {
+  state.world = { ...state.world, ...wg };
 }
   
   // L1 description pass: ensure each visible cell has a narrative description
