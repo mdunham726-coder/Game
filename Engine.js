@@ -1,5 +1,5 @@
 // Engine.js — orchestrator; preserves v118 behavior byte-for-byte on state
-// PHASE 3C: Quest System Integration
+// PHASE 3C: Quest System Integration + L1 Cell Streaming
 const readline = require('readline');
 const crypto = require('crypto');
 const WorldGen = require('./WorldGen');
@@ -11,6 +11,19 @@ const DEFAULTS = {
   L0_SIZE: { w: 8, h: 8 },
   L1_SIZE: { w: 12, h: 12 },
   STREAM: { R: 2, P: 1 },
+};
+
+// L1 Cell Streaming: Biome-to-terrain mapping (inline implementation)
+const BIOME_TERRAIN_TYPES = {
+  urban: ["street", "plaza", "alley", "park_urban", "district_commercial", "district_residential", "building_complex", "market_square", "garden_urban", "meadow"],
+  rural: ["plains_grassland", "plains_wildflower", "meadow", "forest_deciduous", "hills_rolling", "river_crossing", "stream"],
+  forest: ["forest_deciduous", "forest_mixed", "forest_coniferous", "meadow", "stream", "hills_rolling"],
+  desert: ["desert_sand", "desert_dunes", "desert_rocky", "scrubland", "badlands", "canyon", "mesa"],
+  tundra: ["tundra", "snowfield", "ice_sheet", "permafrost", "alpine"],
+  jungle: ["forest_coniferous", "meadow", "swamp", "marsh", "river_crossing", "stream", "wetland"],
+  coast: ["beach_sand", "beach_pebble", "cliffs_coastal", "tidepools", "dunes_coastal", "scrubland", "plains_grassland"],
+  mountain: ["mountain_slopes", "mountain_peak", "mountain_pass", "rocky_terrain", "scree", "alpine", "hills_rocky"],
+  wetland: ["swamp", "marsh", "wetland", "bog", "stream", "river_crossing"]
 };
 
 function toISO8601(value) {
@@ -115,6 +128,87 @@ function initState(timestampUTC) {
     reputation: {},
     history: []
   };
+}
+
+// L1 CELL STREAMING IMPLEMENTATION
+/**
+ * Generates L1 terrain cells around the player position using biome data from L0 macro cells
+ * @param {object} state - The game state object
+ */
+function streamL1Cells(state) {
+  if (!state || !state.world || !state.world.position) {
+    console.log('[STREAM] No valid state or position found');
+    return;
+  }
+
+  const pos = state.world.position;
+  const streamR = state.world.stream?.R || 2;
+  const l1w = state.world.l1_default?.w || 12;
+  const l1h = state.world.l1_default?.h || 12;
+  
+  console.log(`[STREAM] Generating L1 cells around position: M${pos.mx},${pos.my} L${pos.lx},${pos.ly} (radius: ${streamR})`);
+
+  // Find L0 macro cell to determine biome
+  const l0Key = `L0:${pos.mx},${pos.my}`;
+  const l0Cell = state.world.cells[l0Key];
+  let biome = "rural"; // Default fallback
+  
+  if (l0Cell && l0Cell.biome) {
+    biome = l0Cell.biome;
+    console.log(`[STREAM] Using biome from L0 cell: ${biome}`);
+  } else if (state.world.macro_biome) {
+    biome = state.world.macro_biome;
+    console.log(`[STREAM] Using world macro biome: ${biome}`);
+  } else {
+    console.log(`[STREAM] No biome found, using default: ${biome}`);
+  }
+
+  // Get terrain types for this biome
+  const terrainArray = BIOME_TERRAIN_TYPES[biome] || BIOME_TERRAIN_TYPES["rural"];
+  console.log(`[STREAM] Available terrain types: ${terrainArray.join(', ')}`);
+
+  let cellsGenerated = 0;
+
+  // Generate cells in streaming radius around player
+  for (let dx = -streamR; dx <= streamR; dx++) {
+    for (let dy = -streamR; dy <= streamR; dy++) {
+      const lx = pos.lx + dx;
+      const ly = pos.ly + dy;
+      
+      // Check L1 grid boundaries
+      if (lx < 0 || lx >= l1w || ly < 0 || ly >= l1h) {
+        continue;
+      }
+
+      const cellKey = `L1:${pos.mx},${pos.my}:${lx},${ly}`;
+      
+      // Skip if cell already exists
+      if (state.world.cells[cellKey]) {
+        continue;
+      }
+
+      // Randomly select terrain type from biome palette
+      const randomIndex = Math.floor(Math.random() * terrainArray.length);
+      const terrainType = terrainArray[randomIndex];
+
+      // Create new L1 cell
+      state.world.cells[cellKey] = {
+        type: terrainType,
+        subtype: "",
+        biome: biome,
+        mx: pos.mx,
+        my: pos.my,
+        lx: lx,
+        ly: ly,
+        description: "" // Will be filled by L1 description pass
+      };
+
+      cellsGenerated++;
+      console.log(`[STREAM] Generated cell ${cellKey}: ${terrainType}`);
+    }
+  }
+
+  console.log(`[STREAM] Generated ${cellsGenerated} new L1 cells`);
 }
 
 // PHASE 3C: Seeded RNG for deterministic NPC assignments
@@ -289,6 +383,9 @@ if (wg && Array.isArray(wg.deltas)) {
 if (wg) {
   state.world = { ...state.world, ...wg };
 }
+
+  // L1 CELL STREAMING: Generate terrain cells around player
+  streamL1Cells(state);
   
   // L1 description pass: ensure each visible cell has a narrative description
   if (state && state.world && state.world.cells) {
